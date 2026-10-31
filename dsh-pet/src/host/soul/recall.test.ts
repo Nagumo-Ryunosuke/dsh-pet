@@ -102,3 +102,47 @@ describe('召回融合', () => {
     assert.equal(one.event.role, 'fact');
   });
 });
+
+describe('召回预算可配置', () => {
+  test('条数与事实条数都按传入预算生效', () => {
+    const facts = [fact('f1', '用户', '喜欢', '手冲咖啡'), fact('f2', '用户', '在做', '手冲咖啡实验')];
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '手冲咖啡',
+      facts,
+      searchEvents: () => [hit('e1', '手冲咖啡'), hit('e2', '手冲咖啡'), hit('e3', '手冲咖啡')],
+      budget: { maxItems: 2, maxTokens: 400, maxTokensPerItem: 120 },
+      maxFacts: 1,
+    });
+    assert.equal(recalled.length, 2, 'maxItems=2 时只注入两条');
+    assert.equal(recalled[0]?.role, 'fact', '事实仍然优先');
+    assert.equal(recalled[0]?.id, 'f1');
+  });
+
+  test('总预算调小后长记忆被截断而不是全部丢弃', () => {
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '加班',
+      facts: [],
+      searchEvents: () => [hit('e1', '今天加班到很晚'.repeat(40))],
+      budget: { maxItems: 5, maxTokens: 60, maxTokensPerItem: 40 },
+    });
+    assert.equal(recalled.length, 1, '截断后仍要放进去');
+    assert.ok((recalled[0]?.text.length ?? 0) < 200, '正文被截短');
+    assert.match(recalled[0]?.text ?? '', /…$/);
+  });
+
+  test('事实条数设为 0 时只带聊天原文', () => {
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '手冲咖啡',
+      facts: [fact('f1', '用户', '喜欢', '手冲咖啡')],
+      searchEvents: () => [hit('e1', '手冲咖啡')],
+      maxFacts: 0,
+    });
+    assert.deepEqual(
+      recalled.map((one) => one.id),
+      ['e1'],
+    );
+  });
+});

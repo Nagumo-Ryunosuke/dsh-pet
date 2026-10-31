@@ -9,7 +9,14 @@
  * @module dsh-pet/src/host/soul/recall
  */
 
-import { selectFacts, trimToBudget, type Fact, type MemoryHit, type RecalledMemory } from '@deepseek-pet/soul';
+import {
+  selectFacts,
+  trimToBudget,
+  type BudgetOptions,
+  type Fact,
+  type MemoryHit,
+  type RecalledMemory,
+} from '@deepseek-pet/soul';
 
 /** 每轮最多注入几条事实（总预算仍是 trimToBudget 的 5 条 / 400 token）。 */
 export const MAX_RECALLED_FACTS = 3;
@@ -42,6 +49,15 @@ export interface RecallInput {
   readonly facts: readonly Fact[];
   /** 聊天原文的召回调；由调用方决定检索实现。 */
   readonly searchEvents: () => readonly MemoryHit[];
+  /**
+   * 注入预算（条数 / 总 token / 单条 token）。
+   *
+   * 缺省用灵魂的默认值（5 条 / 400 / 120）；用户可以用 `chatMemory*` 配置覆盖，
+   * 解析与夹取在 `soul/budget.ts`。事实和原文共享这一份预算。
+   */
+  readonly budget?: BudgetOptions;
+  /** 最多几条事实；缺省 {@link MAX_RECALLED_FACTS}。 */
+  readonly maxFacts?: number;
 }
 
 /**
@@ -51,11 +67,11 @@ export interface RecallInput {
  * @returns 已排序、已裁剪的往事列表；事实在前。
  */
 export function recallWithFacts(input: RecallInput): RecalledMemory[] {
-  const factHits = selectFacts(input.query, input.facts, { maxFacts: MAX_RECALLED_FACTS }).map((fact) =>
-    factHit(input.petId, fact),
-  );
+  const factHits = selectFacts(input.query, input.facts, {
+    maxFacts: input.maxFacts ?? MAX_RECALLED_FACTS,
+  }).map((fact) => factHit(input.petId, fact));
   // trimToBudget 保持输入顺序：事实在前，预算不够时先保事实
-  const kept = trimToBudget([...factHits, ...input.searchEvents()]);
+  const kept = trimToBudget([...factHits, ...input.searchEvents()], input.budget ?? {});
   return kept.map((hit) => ({
     id: hit.event.id,
     occurredAt: hit.event.occurredAt,

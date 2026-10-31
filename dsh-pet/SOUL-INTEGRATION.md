@@ -17,6 +17,19 @@
 | `DSH_PET_PERSONA` | 文件路径 | 指定人格文件（soul 模式；缺省用数据目录 `persona.yaml`，首次运行自动播种） |
 | `DSH_PET_SOUL_MODEL` | `echo` | 回声模型，链路验证用，不调真实模型 |
 
+## 新增的记忆配置（条目级，`main-config.jsonc` 顶层）
+
+| 键 | 默认 | 含义 |
+| --- | --- | --- |
+| `chatMemoryItems` | 5 | 每轮最多注入几条（事实 + 聊天原文合计），1–20 |
+| `chatMemoryTokens` | 400 | 这些内容的 token 总预算，80–2000 |
+| `chatMemoryItemTokens` | 120 | 单条上限，超了截断而不是丢弃，20–600；会被总预算压住 |
+| `chatMemoryFacts` | 3 | 其中最多几条是长期事实（其余额度留给原文），0–10 |
+
+写坏（越界 / 非整数）回落默认并留一行 warn；配置每次召回现读，改完不必重启。
+**这四个键必须在 `assets/config.jsonc` 里存在**——用户层只能覆盖默认文件已有的键，
+否则会被静默丢弃（`mergeEntry` 只遍历默认键）。
+
 ## 新增/修改的文件（相对上游）
 
 - `src/host/soul/`（新增目录）：`mode.ts`（模式选择）、`real-soul.ts`（真灵魂适配：人格播种、模型网关、历史与记忆存储、召回、事实抽取的宿主侧）、`fake-soul.ts`（M0 假后端，接线检查用）、`command.ts`（soul/fake 模式下的 `/chat` 拒绝桩）。
@@ -35,4 +48,4 @@
 
 ## 测试
 
-`npm test` 全量 2191 项 0 失败；`voice/hear.test.ts` 输出的 `cancelledByParent` 行是既有噪音（单独跑同样 `fail 0`）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/client/chat/actions.test.ts`。
+`npm test` 全量 2200 项 0 失败（此前两处偶发已修：`withDeadline` 把截止定时器 `unref` 掉、body 超时与 413 的竞速）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。

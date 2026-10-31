@@ -48,6 +48,7 @@ import type { ChatMemory } from '../plugin/chat-memory.ts';
 import type { HostContext } from '../plugin/context.ts';
 import type { HostSetup } from '../plugin/setup.ts';
 import type { PetRouteDeps } from '../routes/types.ts';
+import { memoryBudgetOf } from './budget.ts';
 import { recallWithFacts } from './recall.ts';
 
 /** 指定人格文件的环境变量（不设则用用户数据目录下的 persona.yaml）。 */
@@ -197,6 +198,23 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   let factStore: SqliteFactStore | null = null;
   /** 事实抽取器/节拍器：库可用时启用，失败只影响记忆整理，不影响说话。 */
   let scheduler: ExtractionScheduler | null = null;
+
+  /**
+   * 取某只宠物所属条目的配置（记忆预算是条目级字段，与 `chatMemoryRounds` 同一口径）。
+   *
+   * 读不到（宠物已被删、配置坏了）就给空对象：召回只是少带几条往事，不该因此报错。
+   * 每次召回现读一遍，是为了让用户改了 `chatMemory*` 之后不必重启应用。
+   */
+  const entryConfigOf = (petId: string): Record<string, unknown> => {
+    try {
+      return findPetInstance(readAllConfig(configPaths), petId)?.conf ?? {};
+    } catch (error) {
+      log.warn(
+        `[dsh-pet][soul] 读取记忆预算配置失败（按默认值处理）：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return {};
+    }
+  };
   /** 正在生成回复的轮数：抽取要让路，不与用户等待的那句话抢模型。 */
   let activeTurns = 0;
   if (loaded.ok) {
@@ -238,14 +256,16 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
         : {
             // 长期记忆：每轮落两条事件，删聊天时同步清理由这一轮派生的事实。库不可用时不挂，聊天照常
             memory: createEventRecorder(opened, log, facts),
-            // 召回：事实（「她知道的」）排在聊天原文之前，两者共享同一份预算
-            //（最多 5 条 / 400 token / 单条 120）；没有相关事实时只带原文
+            // 召回：事实（「她知道的」）排在聊天原文之前，两者共享同一份预算。
+            // 预算按条目级配置解析（chatMemoryItems / Tokens / ItemTokens / Facts），
+            // 缺省 5 条 / 400 token / 单条 120 / 事实 3 条；写坏回落默认并留 warn
             recall: (petId: string, query: string): RecalledMemory[] =>
               recallWithFacts({
                 petId,
                 query,
                 facts: facts.list(petId, { limit: 200 }),
                 searchEvents: () => opened.search(petId, query),
+                budget: memoryBudgetOf(entryConfigOf(petId), (message) => log.warn(message)),
               }),
           };
 
