@@ -70,10 +70,19 @@ export function personaNode(h: ChatPanelRuntime['h'], state: ChatPanelState): un
   });
 }
 
-/** 一条记忆显示的时刻：`10-31`，年份几乎不会变，省宽度。 */
+/**
+ * 一条记忆显示的时刻：`10-31`，年份几乎不会变，省宽度。
+ *
+ * 用本地时区而不是 `toISOString()`：那是 UTC，晚上 11 点记的事会显示成前一天。
+ */
 function memoryDay(ts: number): string {
-  const text = new Date(ts).toISOString();
-  return text.slice(5, 10);
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return '';
+  try {
+    return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit' }).format(date);
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -124,8 +133,13 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
             className: 'pet-chat-memory-search',
             type: 'search',
             value: state.memoryQuery,
-            placeholder: '搜她记得的事…（空 = 全部）',
-            onChange: (event: { target: { value: string } }) => state.searchMemories(event.target.value),
+            placeholder: '搜她记得的事…（Enter 检索，空 = 全部）',
+            onChange: (event: { target: { value: string } }) => state.setMemoryQuery(event.target.value),
+            onKeyDown: (event: { key: string }) => {
+              // 敲一个字发一次请求会打爆检索（每次都是一次有界扫描），Enter 才搜——
+              // 与输入框 Enter 发送是同一个习惯
+              if (event.key === 'Enter') state.searchMemories(state.memoryQuery);
+            },
           }),
           ...body,
         ],
@@ -176,6 +190,7 @@ export function toolsNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unkn
 
 /** 待确认操作的文案：每条都说清「删什么、不可恢复」。 */
 const CONFIRM_TEXT: Record<ConfirmKind, string> = {
+  'forget-memory': '让她忘掉这条记忆？',
   'delete-selected': '删除选中的这几轮对话？',
   'clear-all': '清空这只宠物的全部对话历史？',
   'clear-orphans': '清理已删除宠物的残留历史？',
@@ -195,7 +210,10 @@ export function confirmNode(rt: ChatPanelRuntime, state: ChatPanelState): unknow
       : state.pending === 'clear-orphans'
         ? `（${state.orphans.length} 只）`
         : '';
-  const description = CONFIRM_TEXT[state.pending] + count + '删了找不回来。';
+  // 「忘掉记忆」是软删除（原文留痕、只是她不再提起），措辞与真删除分开，
+  // 不然用户会以为这条记忆从磁盘上消失了
+  const suffix = state.pending === 'forget-memory' ? '之后她不会再提起。' : '删了找不回来。';
+  const description = CONFIRM_TEXT[state.pending] + count + suffix;
   // 平台原语缺失（旧宿主）时退化为内联确认条，功能不丢、样式差一点
   if (ui === undefined) {
     return h('div', {

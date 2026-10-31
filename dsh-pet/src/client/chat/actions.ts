@@ -131,6 +131,8 @@ export interface ShellDeps {
   readonly ports: ActionPorts;
   /** 记忆删除动作（确认后要分发到它们）。 */
   readonly history: { deleteSelected: () => void; clearAll: () => void };
+  /** 「忘掉一条记忆」动作（确认后要分发到它）。 */
+  readonly memory: { forgetConfirmed: (id: string) => void };
   /** 消息列表容器：展开更早的轮时要按高度差补偿滚动。 */
   readonly listRef: { current: HTMLDivElement | null };
   /** 每次「加载更早」放出的轮数。 */
@@ -145,7 +147,7 @@ export function createShellActions(deps: ShellDeps): {
   confirmAsk: () => void;
   showOlder: () => void;
 } {
-  const { ports, history, listRef, pageRounds } = deps;
+  const { ports, history, memory, listRef, pageRounds } = deps;
 
   /** 清掉已删宠物残留的历史。 */
   const clearOrphans = (): void => {
@@ -166,10 +168,13 @@ export function createShellActions(deps: ShellDeps): {
   /** 确认条点「确定」后按待办类型分发；先清 pending，避免重复触发。 */
   const confirmAsk = (): void => {
     const kind = ports.read().pending;
-    ports.patch({ pending: null });
+    const memoryId = ports.read().pendingMemoryId;
+    // 一起清：先分发再清的话，「忘掉」这边就拿到 null 了
+    ports.patch({ pending: null, pendingMemoryId: null });
     if (kind === 'delete-selected') history.deleteSelected();
     else if (kind === 'clear-all') history.clearAll();
     else if (kind === 'clear-orphans') clearOrphans();
+    else if (kind === 'forget-memory' && memoryId !== null) memory.forgetConfirmed(memoryId);
   };
 
   /** 多放一批更早的轮；按高度差补偿滚动位置，视线不跳。 */
@@ -186,7 +191,7 @@ export function createShellActions(deps: ShellDeps): {
   return {
     clearOrphans,
     ask: (kind: ConfirmKind) => ports.patch({ pending: kind }),
-    cancelAsk: () => ports.patch({ pending: null }),
+    cancelAsk: () => ports.patch({ pending: null, pendingMemoryId: null }),
     confirmAsk,
     showOlder,
   };
@@ -201,20 +206,34 @@ export function createShellActions(deps: ShellDeps): {
  */
 export function createMemoryActions(ports: ActionPorts): {
   toggleMemory: () => void;
+  setMemoryQuery: (query: string) => void;
   searchMemories: (query: string) => void;
   deleteMemory: (id: string) => void;
+  forgetConfirmed: (id: string) => void;
 } {
+  /**
+   * 取数次序号：只有最新一次请求能写状态。
+   *
+   * 检索是用户手触发的，两次请求的完成顺序不保证——慢的旧响应后到，会把新结果
+   * 覆盖成旧结果，用户看到的就是「搜 A 出现了 B 的结果」。
+   */
+  let searchToken = 0;
+
   /** 按当前检索词取一次数；失败只落在 error 上，已列出的条目不动。 */
   const refresh = async (query: string): Promise<void> => {
+    const token = ++searchToken;
     const data = ports.read();
     if (data.petId === '') return;
     ports.patch({ memoryLoading: true });
     try {
-      ports.patch({ memories: await fetchMemories(data.petId, query) });
+      const items = await fetchMemories(data.petId, query);
+      if (token !== searchToken) return; // 已被更新的请求取代，丢掉这份结果
+      ports.patch({ memories: items });
     } catch (error) {
+      if (token !== searchToken) return;
       ports.fail(error);
     } finally {
-      ports.patch({ memoryLoading: false });
+      if (token === searchToken) ports.patch({ memoryLoading: false });
     }
   };
 
@@ -225,11 +244,16 @@ export function createMemoryActions(ports: ActionPorts): {
       // 展开时才取数：收着的时候数据会过期，展开那一刻取的是最新的
       if (opening) void refresh(ports.read().memoryQuery);
     },
+    // 只改词不发请求：请求由 Enter 触发，敲字打爆检索比多按一次 Enter 糟糕得多
+    setMemoryQuery: (query: string): void => ports.patch({ memoryQuery: query }),
     searchMemories: (query: string): void => {
       ports.patch({ memoryQuery: query });
       void refresh(query);
     },
-    deleteMemory: (id: string): void => {
+    // 删除也走确认条：与清空历史同一待遇。「她再也不会提起」是用户可见的变化，
+    // 误触一下就少一件她记得的事，不该省这一次确认
+    deleteMemory: (id: string): void => ports.patch({ pending: 'forget-memory', pendingMemoryId: id }),
+    forgetConfirmed: (id: string): void => {
       void (async () => {
         const data = ports.read();
         try {
@@ -241,6 +265,8 @@ export function createMemoryActions(ports: ActionPorts): {
           await refresh(data.memoryQuery);
         } catch (error) {
           ports.fail(error);
+        } finally {
+          ports.patch({ pendingMemoryId: null });
         }
       })();
     },

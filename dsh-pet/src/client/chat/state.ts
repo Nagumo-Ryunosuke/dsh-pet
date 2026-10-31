@@ -39,6 +39,7 @@ const INITIAL: PanelData = {
   memories: [],
   memoryQuery: '',
   memoryLoading: false,
+  pendingMemoryId: null,
   speaking: null,
 };
 
@@ -77,7 +78,7 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
     const ports = { read: () => data, patch, fail, reload };
     const history = createHistoryActions(ports);
     const memory = createMemoryActions(ports);
-    const shell = createShellActions({ ports, history, listRef, pageRounds: PAGE_ROUNDS });
+    const shell = createShellActions({ ports, history, memory, listRef, pageRounds: PAGE_ROUNDS });
     const pet = data.pets.find((one) => one.id === data.petId);
     const allRounds = groupRounds(data.messages);
     const rounds = allRounds.slice(-data.visibleRounds);

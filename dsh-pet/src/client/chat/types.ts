@@ -52,12 +52,14 @@ export interface PanelData {
   readonly memoryQuery: string;
   /** 卷帘正在取数。 */
   readonly memoryLoading: boolean;
+  /** 待确认「忘掉」的那条记忆 id；null = 没有待确认的。 */
+  readonly pendingMemoryId: string | null;
   /** 正在点播的那一轮与阶段；null = 没有在播。同一时刻只播一条。 */
   readonly speaking: { readonly ts: number; readonly phase: 'loading' | 'playing' | 'failed' } | null;
 }
 
 /** 需要二次确认的破坏性操作：用面板内的确认条，不用浏览器原生 `confirm`。 */
-export type ConfirmKind = 'delete-selected' | 'clear-all' | 'clear-orphans';
+export type ConfirmKind = 'delete-selected' | 'clear-all' | 'clear-orphans' | 'forget-memory';
 
 /** hook 返回：状态、派生值、动作与列表引用。 */
 export interface ChatPanelState extends PanelData {
@@ -81,10 +83,14 @@ export interface ChatPanelState extends PanelData {
   readonly toggleMemory: () => void;
   /** 收起记忆卷帘。 */
   readonly closeMemory: () => void;
+  /** 只更新检索词（Enter 才真正检索）。 */
+  readonly setMemoryQuery: (query: string) => void;
   /** 按关键词检索记忆；空串 = 浏览全部。 */
   readonly searchMemories: (query: string) => void;
-  /** 删除一条记忆，然后按当前检索词重取。 */
+  /** 请求「忘掉」一条记忆（弹确认条，不执行）。 */
   readonly deleteMemory: (id: string) => void;
+  /** 确认后真正执行「忘掉」，然后按当前检索词重取。id 由确认分发方从待办里取出传入。 */
+  readonly forgetConfirmed: (id: string) => void;
   /** 消息列表容器：滚动到底部要用。 */
   readonly listRef: { current: HTMLDivElement | null };
   /** 输入框：内容变高时要直接改它的 height。 */

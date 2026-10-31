@@ -215,13 +215,17 @@ describe('记忆卷帘的动作', () => {
       await settle();
       memory.searchMemories('  豆豆  ');
       await settle();
-      assert.match(captured.urls[captured.urls.length - 1] ?? '', /q=%E8%B1%86%E8%B1%86/, '检索词要透传（trim 后编码）');
+      assert.match(
+        captured.urls[captured.urls.length - 1] ?? '',
+        /q=%E8%B1%86%E8%B1%86/,
+        '检索词要透传（trim 后编码）',
+      );
     } finally {
       captured.restore();
     }
   });
 
-  test('删除一条后按当前检索词重取，条数以服务端为准', async () => {
+  test('忘掉一条：先弹确认，确认后才删并按当前检索词重取', async () => {
     // 第 1 次响应 = 首次展开；第 2 次 = DELETE；第 3 次 = 删后重取
     const captured = stubFetch([
       {
@@ -242,11 +246,59 @@ describe('记忆卷帘的动作', () => {
       assert.equal(box.state.memories.length, 2);
 
       memory.deleteMemory('e1');
+      assert.equal(box.state.pending, 'forget-memory', '先弹确认条');
+      assert.equal(box.state.pendingMemoryId, 'e1');
+      assert.equal(box.state.memories.length, 2, '确认前不执行');
+
+      memory.forgetConfirmed('e1');
       await settle();
       assert.equal(box.state.memories.length, 1, '以服务端重取的结果为准');
       assert.equal(box.state.memories[0]?.id, 'e2');
+      assert.equal(box.state.pendingMemoryId, null, '执行完清掉待办');
     } finally {
       captured.restore();
+    }
+  });
+
+  test('慢的旧检索响应不会覆盖新结果', async () => {
+    const original = globalThis.fetch;
+    const resolvers: ((response: Response) => void)[] = [];
+    globalThis.fetch = ((url: string) => {
+      void url;
+      return new Promise<Response>((resolve) => {
+        resolvers.push(resolve);
+      });
+    }) as typeof fetch;
+    try {
+      const { ports, box } = makePorts(memoryPanel());
+      const memory = createMemoryActions(ports);
+      memory.searchMemories('第一词');
+      memory.searchMemories('第二词');
+      await settle();
+
+      // 先回来的是旧请求：它必须被丢掉，而不是把新结果盖掉
+      resolvers[0]?.(
+        new Response(
+          JSON.stringify({ ok: true, events: [{ id: 'a', occurredAt: 1, role: 'user', text: '旧词的结果' }] }),
+          { status: 200 },
+        ),
+      );
+      await settle();
+      assert.equal(box.state.memories.length, 0, '旧响应不算数');
+
+      resolvers[1]?.(
+        new Response(
+          JSON.stringify({ ok: true, events: [{ id: 'b', occurredAt: 2, role: 'user', text: '新词的结果' }] }),
+          { status: 200 },
+        ),
+      );
+      await settle();
+      assert.deepEqual(
+        box.state.memories.map((one) => one.id),
+        ['b'],
+      );
+    } finally {
+      globalThis.fetch = original;
     }
   });
 
