@@ -113,10 +113,13 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
           pending: null,
           visibleRounds: PAGE_ROUNDS,
           error: '',
-          // 换宠 = 换记忆：卷帘收起并清空，展开时会按新宠物重新取
+          // 换宠 = 换记忆：卷帘收起并清空，展开时会按新宠物重新取。
+          // 下面这组是「按宠物分的数据」的全部字段——新增一类记忆，记得也在这里清掉，
+          // 否则新宠物的卷帘会显示上一只的内容（摘要就漏过一次）
           memoryOpen: false,
           memories: [],
           facts: [],
+          summaries: [],
           memoryQuery: '',
           memoryLoading: false,
           pendingMemoryId: null,

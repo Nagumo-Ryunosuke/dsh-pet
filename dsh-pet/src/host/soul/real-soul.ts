@@ -21,6 +21,7 @@ import {
   createEventRecorder,
   createExtractionScheduler,
   createFactExtractor,
+  createSummaryRebuilder,
   createSoul,
   DEFAULT_PERSONA_YAML,
   defaultPersonaFile,
@@ -330,6 +331,10 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     // 后台事实抽取：库都可用才启用。跑不跑由节拍器决定（空闲 10 分钟 / 累计 10 条），
     // 这里只组装依赖；真正驱动在宿主侧的维护定时器里
     if (opened !== null && facts !== null && jobs !== null) {
+      // 摘要存储与事件同库：库可用时它一定在；这里仍按可空处理，免得依赖装配顺序
+      const rebuilder = summaryStore === null ? undefined : createSummaryRebuilder(summaryStore, model, jobs, log);
+      const rebuildHook =
+        rebuilder === undefined ? undefined : (petId: string, at: number) => rebuilder.rebuild(petId, at);
       scheduler = createExtractionScheduler({
         events: opened,
         jobs,
@@ -340,6 +345,9 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
             .filter((id) => id !== ''),
         log,
         isBusy: () => activeTurns > 0,
+        // 被「来源被删」拉下线的摘要：没有待抽取事件时补一条回来。
+        // 任务记在 jobs（type=summarize），和抽取共用同一份每日预算
+        rebuild: rebuildHook,
       });
       log.info('[dsh-pet][soul] 事实抽取已启用：空闲 10 分钟或累计 10 条触发，每天最多 4 次');
     } else {
@@ -485,15 +493,21 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
         ? undefined
         : async (petId, ids) => {
             const removed = events.softDelete(petId, ids);
-            // 单条记忆被删时，由它单独支撑的事实也必须退出使用；还有别的来源就继续保留
+            // 派生数据要跟着退：由它单独支撑的事实撤掉来源，覆盖它的摘要整条退出检索。
+            // 漏掉任一条，都会变成「我从面板删了这句话，她还在提」——这是这一层唯一不能破的承诺
+            const now = Date.now();
             let detached = 0;
             if (factStore !== null) {
-              const now = Date.now();
               for (const id of ids) detached += factStore.detachEvent(petId, id, now);
+            }
+            let dirtied = 0;
+            if (summaryStoreRef !== null) {
+              for (const id of ids) dirtied += summaryStoreRef.dirtyByEvent(petId, id, now);
             }
             log.info(
               `[dsh-pet][soul] 删除记忆 pet=${petId} removed=${removed}` +
-                (detached > 0 ? ` 派生事实来源 ${detached} 条` : ''),
+                (detached > 0 ? ` 派生事实来源 ${detached} 条` : '') +
+                (dirtied > 0 ? ` 摘要退出 ${dirtied} 条` : ''),
             );
             return removed;
           },

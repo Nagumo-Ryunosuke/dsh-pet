@@ -67,7 +67,8 @@ export function summaryHit(petId: string, summary: Summary): MemoryHit {
       privacy: 'normal',
     },
     score: 0,
-    via: 'fact',
+    // 摘要不是检索命中，但走同一份预算与同一套渲染，用 via 标清来源（日志里能分辨）
+    via: 'summary',
   };
 }
 
