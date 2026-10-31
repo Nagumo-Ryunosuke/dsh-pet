@@ -26,10 +26,12 @@ import {
   parsePersona,
   SqliteEventStore,
   SqliteTurnStore,
+  trimToBudget,
   TurnHistory,
   type EventStore,
   type ModelGateway,
   type Persona,
+  type RecalledMemory,
   type Soul,
   type TurnStore,
 } from '@deepseek-pet/soul';
@@ -196,7 +198,19 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       // 历史落库（`<userRoot>/soul.db`）：重启后还能接上，这是 M1 第二阶段的目标
       history: turns,
       // 长期记忆：每轮落两条事件，删聊天时同步遗忘。库不可用时不挂，聊天照常
-      ...(events === null ? {} : { memory: createEventRecorder(events, log) }),
+      ...(events === null
+        ? {}
+        : {
+            memory: createEventRecorder(events, log),
+            // 召回：按当前输入查事件库，按默认预算裁剪（最多 5 条 / 400 token / 单条 120）
+            recall: (petId: string, query: string): RecalledMemory[] =>
+              trimToBudget(events.search(petId, query)).map((hit) => ({
+                id: hit.event.id,
+                occurredAt: hit.event.occurredAt,
+                role: hit.event.role,
+                text: hit.event.text,
+              })),
+          }),
       log,
     });
     log.info(`[dsh-pet][soul] 人格已加载 id=${personaId} v=${loaded.persona.version}（${loaded.file}）`);
