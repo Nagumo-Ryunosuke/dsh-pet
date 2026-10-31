@@ -237,6 +237,7 @@ export async function fetchHistory(petId: string): Promise<ChatMessageView[]> {
  * @param petId - 宠物 id。
  * @param text - 用户输入（宿主 trim 并校验 2000 字上限）。
  * @param attachment - 可选的一张图（已压缩的规范 base64）。
+ * @param requestId - 可选的幂等键；同一次发送动作的重试要复用同一个值。
  * @returns 成功回执，或可直接展示的失败文案。
  * @throws 网络中断或响应不是 JSON 时。
  */
@@ -244,10 +245,11 @@ export async function sendMessage(
   petId: string,
   text: string,
   attachment?: ChatAttachment,
+  requestId?: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   // surface=any：对话窗口不看渲染结果，隐藏（display: none）的宠物也应当能对话
   const url = ROUTE_PATH + '/chat?pet=' + encodeURIComponent(petId) + '&surface=any';
-  const result = await sendChat(url, text, attachment);
+  const result = await sendChat(url, text, attachment, requestId);
   return result.ok ? { ok: true } : { ok: false, message: result.message ?? result.reason };
 }
 

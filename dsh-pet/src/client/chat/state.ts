@@ -21,6 +21,7 @@ const INITIAL: PanelData = {
   petId: '',
   messages: [],
   draft: '',
+  requestId: null,
   attachment: undefined,
   busy: false,
   loading: true,
@@ -108,7 +109,8 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
         patch({
           selected: data.selected.includes(ts) ? data.selected.filter((one) => one !== ts) : [...data.selected, ts],
         }),
-      setDraft: (draft: string) => patch({ draft }),
+      // 改字就是另一句话：把上一次发送动作的幂等键作废，否则重试会被误认成「同一句还在跑」
+      setDraft: (draft: string) => patch({ draft, requestId: null }),
       speakRound: (ts: number, text: string) => {
         // 阶段回调只写「仍是这一轮」的状态：被别的一条顶掉时，旧请求的 idle 不能清掉新状态
         speakText(text, (phase) => {

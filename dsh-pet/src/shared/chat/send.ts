@@ -24,15 +24,26 @@ const SEND_TIMEOUT_MS = 60_000;
  *
  * @param baseUrl - 已含 `?pet=&surface=` 的完整对话地址。
  * @param text - 用户输入正文（宿主会 trim 并校验 2000 字上限）。
- * @param attachment - 可选的一张图片；不传时请求体只有 `text`，与旧版逐字一致。
+ * @param attachment - 可选的一张图片；不传时请求体不带这个字段。
+ * @param requestId - 可选的幂等键：同一个「发送动作」的重试必须传同一个值，
+ *   宿主据此只生成一次；不传则每次都是新请求（老行为）。
  * @returns 成功，或归一化后的失败原因与文案。
  * @throws 响应不是 JSON 对象时。
  */
-export async function sendChat(baseUrl: string, text: string, attachment?: ChatAttachment): Promise<ChatSendState> {
+export async function sendChat(
+  baseUrl: string,
+  text: string,
+  attachment?: ChatAttachment,
+  requestId?: string,
+): Promise<ChatSendState> {
+  // 逐项追加而不是一次性写字面量：没图没标识时请求体仍然只有 { text }，与旧版逐字一致
+  const payload: Record<string, unknown> = { text };
+  if (attachment !== undefined) payload.attachment = attachment;
+  if (requestId !== undefined) payload.requestId = requestId;
   const res = await fetch(baseUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(attachment ? { text, attachment } : { text }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
   });
   const raw: unknown = await res.json().catch(() => null);

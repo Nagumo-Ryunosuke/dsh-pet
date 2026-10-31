@@ -9,6 +9,21 @@ import { encodeImageFile } from '../../shared/chat/encode.ts';
 import { clearHistory, clearOrphans as clearOrphansApi, deleteRounds, sendMessage, type DeleteResult } from './api.ts';
 import type { ConfirmKind, PanelData } from './types.ts';
 
+/**
+ * 给一次发送动作生成幂等键。
+ *
+ * 优先用 `crypto.randomUUID`（Electron 与 localhost 都是安全上下文，正常都有）；拿不到时
+ * 退回「时间戳 + 随机串」——这个键只要求在同一只宠物下不重复，不要求密码学强度。
+ *
+ * @returns 一个新的请求标识。
+ */
+function newRequestId(): string {
+  const cryptoApi = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  const uuid = cryptoApi?.randomUUID?.();
+  if (typeof uuid === 'string' && uuid !== '') return uuid;
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
 /** 动作需要的最小端口。 */
 export interface ActionPorts {
   /** 读写当前状态快照（每次渲染重建，取到的就是最新值）。 */
@@ -65,19 +80,24 @@ export function createSendActions(ports: ActionPorts): {
       const data = ports.read();
       const text = data.draft.trim();
       if (text === '' || data.busy || data.petId === '') return;
-      ports.patch({ busy: true, error: '' });
+      // 幂等键跟着「这一句草稿」走：首次点发送时生成，失败后重按发送复用它，
+      // 宿主就能认出上一把是不是其实已经生成好了——只是回执在路上丢了
+      const requestId = data.requestId ?? newRequestId();
+      ports.patch(data.requestId === null ? { busy: true, error: '', requestId } : { busy: true, error: '' });
       void (async () => {
         try {
           const attachment =
             data.attachment === undefined
               ? undefined
               : { mediaType: data.attachment.mediaType, data: data.attachment.base64 };
-          const result = await sendMessage(data.petId, text, attachment);
+          const result = await sendMessage(data.petId, text, attachment, requestId);
           if (!result.ok) {
+            // 失败时保留 requestId：不清空，用户重按发送才是「重试同一件事」
             ports.fail(result.message);
             return;
           }
-          ports.patch({ draft: '', attachment: undefined });
+          // 这一句已经落地，键的任务结束：下一句是另一件事
+          ports.patch({ draft: '', attachment: undefined, requestId: null });
           await ports.reload(data.petId);
         } catch (error) {
           ports.fail(error);

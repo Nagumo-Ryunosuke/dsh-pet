@@ -109,6 +109,26 @@ function parseTsList(raws: readonly string[]): number[] | null {
 }
 
 /**
+ * 请求标识的长度上限：它只是去重键，没有语义，超长值没有正当理由。
+ */
+const MAX_REQUEST_ID_CHARS = 200;
+
+/**
+ * 解析请求体里的 `requestId`（幂等键）。
+ *
+ * @param raw - 原始值。
+ * @returns 字符串 = 要透传的标识；`undefined` = 客户端没带（不去重）；
+ *   `null` = 带了但不合法（调用方转 bad-request）。
+ */
+function parseRequestId(raw: unknown): string | undefined | null {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string') return null;
+  const id = raw.trim();
+  if (id === '' || id.length > MAX_REQUEST_ID_CHARS) return null;
+  return id;
+}
+
+/**
  * POST /chat：解析文本与可选图片，交给对话层生成回复。
  *
  * @param deps - 路由依赖。
@@ -126,6 +146,11 @@ async function postChat(deps: PetRouteDeps, petId: string, body: string | undefi
   const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
   if (!text) return failResult('bad-request', '消息为空');
   if (text.length > 2000) return failResult('bad-request', '消息过长（限 2000 字）');
+  // 幂等键的校验放在图片准入之前：任何会落盘的副作用都不该在入参还没验完时发生
+  const requestId = parseRequestId(parsed.requestId);
+  if (requestId === null) {
+    return failResult('bad-request', `requestId 必须是 1–${MAX_REQUEST_ID_CHARS} 字的字符串`);
+  }
   // 后端不具备图片能力时，必须在落盘之前拒绝：先存图再被后端拒，会在附件库里留下一个用户
   // 既看不见、也没法清理的孤儿文件。缺省（undefined）视为支持，原生路径行为不变。
   if (parsed.attachment !== undefined && deps.chatSupportsImages === false) {
@@ -134,7 +159,7 @@ async function postChat(deps: PetRouteDeps, petId: string, body: string | undefi
   // 图片缺省时直接返回空结论，下面的调用与加入图片前逐字一致（回归测试钉的就是这条）
   const admitted = await admitImage(deps, parsed.attachment);
   if (!admitted.ok) return admitted.res;
-  return okResult(await deps.chatWithPet(petId, text, admitted.ref));
+  return okResult(await deps.chatWithPet(petId, text, admitted.ref, requestId));
 }
 
 /**

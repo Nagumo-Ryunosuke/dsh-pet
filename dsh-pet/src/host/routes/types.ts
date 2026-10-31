@@ -143,8 +143,18 @@ export interface PetRouteDeps {
   readonly memoryPath: string;
   /** 单次对话保留的轮数。 */
   readonly memoryRounds: (conf: Record<string, unknown>) => number;
-  /** 与本机宠物对话；image 缺省 = 纯文本，数据路径与加入图片前一致。 */
-  readonly chatWithPet: (petId: string, text: string, image?: PetImageRef) => Promise<GeneratedReply>;
+  /**
+   * 与本机宠物对话；image 缺省 = 纯文本，数据路径与加入图片前一致。
+   *
+   * `requestId` 是可选幂等键：同一次「发送动作」重试时复用，后端据此只生成一次。
+   * 缺省表示不去重——只有客户端知道两次到达算不算同一件事，所以由它决定。
+   */
+  readonly chatWithPet: (
+    petId: string,
+    text: string,
+    image?: PetImageRef,
+    requestId?: string,
+  ) => Promise<GeneratedReply>;
   /** 当前对话后端是否支持图片附件。`false` 时路由在**落盘之前**就拒绝，不产生孤儿附件；
    *  缺省视为支持（原生路径与既有调用方行为不变）。 */
   readonly chatSupportsImages?: boolean;

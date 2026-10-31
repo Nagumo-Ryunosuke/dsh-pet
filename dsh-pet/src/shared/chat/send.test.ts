@@ -55,6 +55,27 @@ describe('sendChat 请求体', () => {
     }
   });
 
+  test('带幂等键：请求体多一个 requestId，值原样不加工', async () => {
+    const captured = captureFetch({ ok: true });
+    try {
+      await sendChat('http://127.0.0.1/dsh-pet-7340/chat', '在吗', undefined, 'req-1');
+      assert.deepEqual(JSON.parse(captured.bodies[0] ?? '{}'), { text: '在吗', requestId: 'req-1' });
+    } finally {
+      captured.restore();
+    }
+  });
+
+  test('图与幂等键同时带：三个字段共存，互不覆盖', async () => {
+    const captured = captureFetch({ ok: true });
+    const attachment = { mediaType: 'image/png', data: 'BBBB' };
+    try {
+      await sendChat('http://127.0.0.1/dsh-pet-7340/chat', '看图', attachment, 'req-2');
+      assert.deepEqual(JSON.parse(captured.bodies[0] ?? '{}'), { text: '看图', attachment, requestId: 'req-2' });
+    } finally {
+      captured.restore();
+    }
+  });
+
   test('宿主回 ok:false → 原因归一化，message 原样带回', async () => {
     const captured = captureFetch({ ok: false, reason: 'bad-request', message: '图片过大' });
     try {

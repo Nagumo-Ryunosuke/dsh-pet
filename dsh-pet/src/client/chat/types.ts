@@ -14,6 +14,13 @@ export interface PanelData {
   readonly petId: string;
   readonly messages: ChatMessageView[];
   readonly draft: string;
+  /**
+   * 当前这句草稿的幂等键：第一次点发送时生成，发送成功后清空。
+   *
+   * 留着到下一次成功为止，是为了让「超时/报错后再点一次发送」被宿主认成同一个请求——
+   * 上一次可能其实已经生成好了，只是回执没回来。改动草稿即视为另一句话，键随之作废。
+   */
+  readonly requestId: string | null;
   /** 待发送的图；undefined = 这一条是纯文字。 */
   readonly attachment: EncodedImage | undefined;
   readonly busy: boolean;

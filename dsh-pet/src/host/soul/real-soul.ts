@@ -72,7 +72,10 @@ function readPersona(file: string): { ok: true; persona: Persona } | { ok: false
   try {
     raw = readFileSync(file, 'utf8');
   } catch (error) {
-    return { ok: false, message: `人格文件读不到：${file}（${error instanceof Error ? error.message : String(error)}）` };
+    return {
+      ok: false,
+      message: `人格文件读不到：${file}（${error instanceof Error ? error.message : String(error)}）`,
+    };
   }
   try {
     return { ok: true, persona: parsePersona(raw) };
@@ -133,7 +136,9 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       writeFileSync(personaFile, DEFAULT_PERSONA_YAML, 'utf8');
       log.info(`[dsh-pet][soul] 已写入默认人格，可直接编辑：${personaFile}`);
     } catch (error) {
-      log.warn(`[dsh-pet][soul] 默认人格写入失败（将退回包内副本）：${error instanceof Error ? error.message : String(error)}`);
+      log.warn(
+        `[dsh-pet][soul] 默认人格写入失败（将退回包内副本）：${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -214,6 +219,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     petId: string,
     text: string,
     image?: PetImageRef,
+    requestId?: string,
   ): Promise<
     | { ok: true; text: string; image?: string }
     | { ok: false; reason: 'provider-missing' | 'generate-error' | 'unknown-pet'; message?: string }
@@ -225,9 +231,14 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     if (image !== undefined) {
       return { ok: false, reason: 'generate-error', message: 'soul 模式暂不支持图片附件' };
     }
-    const result = await soul.chat(petId, text);
+    // 顺带把幂等键交给灵魂：重复到达的那一次不会二次生成，也不会在历史里多出一轮
+    const result = await soul.chat(petId, text, requestId === undefined ? undefined : { requestId });
     if (!result.ok) {
-      return { ok: false, reason: result.reason === 'invalid-input' ? 'generate-error' : result.reason, message: result.message };
+      return {
+        ok: false,
+        reason: result.reason === 'invalid-input' ? 'generate-error' : result.reason,
+        message: result.message,
+      };
     }
     // 与上游同一条展示链路：气泡读的是这个叶子，窗口与气泡必然一致
     state.writePet(petId, 'say', { text: result.text, anim: false });
