@@ -110,6 +110,8 @@ export function apply(ctx: any): void {
     ...petLookup,
     ...workStatusBridge,
     ...chatMemory,
+    // 图片能力随后端走：soul（M0 假后端）不支持，路由据此在落盘前拒绝，避免留下孤儿附件。
+    chatSupportsImages: backendMode !== 'soul',
     ...balancePoll,
     ...desktopHelper,
     ...sessionNotify,

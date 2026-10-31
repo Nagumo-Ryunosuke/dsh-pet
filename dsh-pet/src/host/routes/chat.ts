@@ -126,6 +126,11 @@ async function postChat(deps: PetRouteDeps, petId: string, body: string | undefi
   const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
   if (!text) return failResult('bad-request', '消息为空');
   if (text.length > 2000) return failResult('bad-request', '消息过长（限 2000 字）');
+  // 后端不具备图片能力时，必须在落盘之前拒绝：先存图再被后端拒，会在附件库里留下一个用户
+  // 既看不见、也没法清理的孤儿文件。缺省（undefined）视为支持，原生路径行为不变。
+  if (parsed.attachment !== undefined && deps.chatSupportsImages === false) {
+    return failResult('bad-request', '当前对话后端不支持图片附件');
+  }
   // 图片缺省时直接返回空结论，下面的调用与加入图片前逐字一致（回归测试钉的就是这条）
   const admitted = await admitImage(deps, parsed.attachment);
   if (!admitted.ok) return admitted.res;

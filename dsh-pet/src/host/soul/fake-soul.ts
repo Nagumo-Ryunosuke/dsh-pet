@@ -26,7 +26,13 @@ export type FakeSoulInput = Pick<HostSetup, 'configPaths' | 'log' | 'state'> & {
   faultInjection?: boolean;
   /** 取当前时刻；缺省 `Date.now`。可注入才能真正验证「同毫秒不撞轮」（与 LockStore 同约定）。 */
   now?: () => number;
+  /** 内存历史保留的轮数上限；缺省 {@link MAX_ROUNDS}。测试用极小值验证裁剪。 */
+  maxRounds?: number;
 };
+
+/** 隔离历史在内存里保留的轮数上限（单轮 = 一问一答）。
+ *  原型不落盘，长时间运行必须有个上界；500 轮远超任何真实会话，它是安全阀而不是产品策略。 */
+export const MAX_ROUNDS = 500;
 
 /** 打开故障注入的环境变量：默认关闭，避免普通用户打出这个前缀就收到一条假错误。 */
 export const FAULT_ENV = 'DSH_PET_M0_FAULT';
@@ -67,6 +73,8 @@ export function createFakeSoul(deps: FakeSoulInput): FakeSoul {
   const faults = deps.faultInjection ?? process.env[FAULT_ENV] === '1';
   /** 取当前时刻（可注入：同毫秒撞轮的单测不用真的等时钟）。 */
   const now = deps.now ?? Date.now;
+  /** 内存历史上限（见 {@link MAX_ROUNDS}）。 */
+  const maxRounds = deps.maxRounds ?? MAX_ROUNDS;
   /** 隔离的进程内历史：petId → 消息数组。绝不落到 memory.json。 */
   const messagesByPet = new Map<string, ChatMemoryMessage[]>();
   /** 当前活跃宠物（与上游相同的语义：/pet 选择、命令与余额共用）。 */
@@ -74,6 +82,10 @@ export function createFakeSoul(deps: FakeSoulInput): FakeSoul {
   let calls = 0;
   /** 上一次分配的轮次时间戳：用来把同一毫秒内的两轮错开，见 chatWithPet 里的说明。 */
   let lastTs = 0;
+  /** 已受理的轮次序号：只用于回复文案，与内存里实际留存的条数解耦（裁剪后不会倒着数）。 */
+  let roundSeq = 0;
+  /** 是否已经因为超上限裁剪过（只记一次日志）。 */
+  let trimmed = false;
   /** 主动发言被拒的次数（只用于日志收敛：不刷屏，但能看出循环仍在跑）。 */
   let proactiveRefusals = 0;
 
@@ -141,7 +153,8 @@ export function createFakeSoul(deps: FakeSoulInput): FakeSoul {
     }
 
     const list = messagesByPet.get(petId) ?? [];
-    const round = Math.floor(list.length / 2) + 1;
+    roundSeq += 1;
+    const round = roundSeq;
     // 固定回复：不含输入正文，避免看起来像模型生成，也避免把用户原话写进日志。
     const reply = `（假灵魂）第 ${round} 轮收到，M0 假后端不生成内容。`;
     // 轮次时间戳必须严格递增：上游 UI 按 ts 分轮、按 ts 成对删，而 Windows 上连续两次
@@ -151,6 +164,14 @@ export function createFakeSoul(deps: FakeSoulInput): FakeSoul {
     lastTs = ts;
     list.push({ role: 'user', content: text, ts });
     list.push({ role: 'assistant', content: reply, ts });
+    // 有界：内存历史没有落盘容量兜底，长跑必须自己封顶。从头丢最旧的整轮，保证一问一答不被切开。
+    if (list.length > maxRounds * 2) {
+      list.splice(0, list.length - maxRounds * 2);
+      if (!trimmed) {
+        trimmed = true;
+        log.warn(`[dsh-pet][soul] 内存历史超过 ${maxRounds} 轮，已丢弃最早的整轮（原型上限，M1 落库后取消）`);
+      }
+    }
     messagesByPet.set(petId, list);
     // 与上游同一条展示链路：气泡读的是这个叶子，因此窗口与气泡必然一致。
     state.writePet(petId, 'say', { text: reply, anim: false });

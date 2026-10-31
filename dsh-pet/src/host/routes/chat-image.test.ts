@@ -21,8 +21,9 @@ const PNG_BASE64 = PNG_BYTES.toString('base64');
 /** 一次 chatWithPet 调用（用来断言路由把什么透传下去了） */
 type ChatCall = { petId: string; text: string; image?: PetImageRef };
 
-/** 造最小路由依赖；只有 chat 分支用到的成员是真的，其余按接口形状占位。 */
-function makeDeps(sink?: PetImageSink): { deps: PetRouteDeps; calls: ChatCall[] } {
+/** 造最小路由依赖；只有 chat 分支用到的成员是真的，其余按接口形状占位。
+ *  `extra` 用来覆盖个别字段（例如声明后端不支持图片）。 */
+function makeDeps(sink?: PetImageSink, extra: Record<string, unknown> = {}): { deps: PetRouteDeps; calls: ChatCall[] } {
   const calls: ChatCall[] = [];
   const deps = {
     configPaths: {},
@@ -36,6 +37,7 @@ function makeDeps(sink?: PetImageSink): { deps: PetRouteDeps; calls: ChatCall[] 
       calls.push({ petId, text, image });
       return { ok: true as const, text: '嗯' };
     },
+    ...extra,
   } as unknown as PetRouteDeps;
   return { deps, calls };
 }
@@ -124,6 +126,22 @@ describe('POST /chat 的 attachment', () => {
     );
     assert.equal(body.reason, 'bad-request');
     assert.match(String(body.message), /不支持图片/);
+    assert.equal(calls.length, 0);
+  });
+
+  test('后端声明不支持图片 → 在落盘之前拒绝，附件服务一次都没被调用', async () => {
+    const { sink, saved } = makeSink();
+    const { deps, calls } = makeDeps(sink, { chatSupportsImages: false });
+    const body = jsonBody(
+      await handleChatRoutes(
+        deps,
+        postChat({ text: '看图', attachment: { mediaType: 'image/png', data: PNG_BASE64 } }),
+      ),
+    );
+    assert.equal(body.ok, false);
+    assert.equal(body.reason, 'bad-request');
+    assert.match(String(body.message), /不支持图片/);
+    assert.equal(saved.length, 0, '不能先存图再拒绝：会留下用户看不见也删不掉的孤儿附件');
     assert.equal(calls.length, 0);
   });
 

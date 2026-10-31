@@ -51,7 +51,7 @@ function tempWorkspace(overlay: Record<string, unknown> = {}): { configPaths: Co
  */
 function makeSoul(
   t: Ctx,
-  opts: { overlay?: Record<string, unknown>; faultInjection?: boolean; now?: () => number } = {},
+  opts: { overlay?: Record<string, unknown>; faultInjection?: boolean; now?: () => number; maxRounds?: number } = {},
 ): { soul: FakeSoul; writes: Write[] } {
   const { configPaths, dir } = tempWorkspace(opts.overlay ?? {});
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -62,6 +62,7 @@ function makeSoul(
     log,
     faultInjection: opts.faultInjection ?? false,
     now: opts.now,
+    maxRounds: opts.maxRounds,
     state: { writePet: (petId: string, leaf: string, data: unknown) => writes.push([petId, leaf, data as Write[2]]) },
   } as unknown as Pick<HostSetup, 'configPaths' | 'log' | 'state'>);
   return { soul, writes };
@@ -171,6 +172,19 @@ describe('假灵魂后端（M0）', () => {
     assert.equal(cleared.ok, true);
     if (cleared.ok) assert.equal(cleared.removed, 2);
     assert.equal((await messagesOf(soul, 'main')).length, 0);
+  });
+
+  test('内存历史有上限：超过后丢弃最旧的整轮，轮次序号继续累加', async (t) => {
+    const { soul } = makeSoul(t, { maxRounds: 2 });
+    for (let i = 1; i <= 4; i += 1) await soul.chatWithPet('main', `第${i}句`);
+
+    const messages = await messagesOf(soul, 'main');
+    assert.equal(messages.length, 4, '上限 2 轮 = 4 条消息');
+    assert.equal(messages[0].content, '第3句', '丢的是最旧的整轮，不能把一问一答切开');
+    assert.equal(messages[0].role, 'user');
+
+    const fifth = await soul.chatWithPet('main', '第5句');
+    assert.ok(fifth.ok && /第 5 轮/.test(fifth.text), '序号用独立计数器，裁剪后不会倒着数');
   });
 
   test('主动发言路径恒失败，且拒绝次数可观测', async (t) => {

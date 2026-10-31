@@ -145,6 +145,9 @@ export interface PetRouteDeps {
   readonly memoryRounds: (conf: Record<string, unknown>) => number;
   /** 与本机宠物对话；image 缺省 = 纯文本，数据路径与加入图片前一致。 */
   readonly chatWithPet: (petId: string, text: string, image?: PetImageRef) => Promise<GeneratedReply>;
+  /** 当前对话后端是否支持图片附件。`false` 时路由在**落盘之前**就拒绝，不产生孤儿附件；
+   *  缺省视为支持（原生路径与既有调用方行为不变）。 */
+  readonly chatSupportsImages?: boolean;
   /** 删除该宠物的对话记忆：ts 缺省 = 清空全部，否则只删命中的轮（成对）。 */
   readonly deleteHistory: (
     petId: string,
