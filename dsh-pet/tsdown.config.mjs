@@ -55,6 +55,10 @@ export default defineConfig([
     entry: {
       index: 'src/host/index.ts',
     },
+    // 灵魂包（@deepseek-pet/soul）打进产物：它不在 npm registry 上，插件按「整包拷进
+    // profile/node_modules」的方式安装，留成裸 import 会让那边 ERR_MODULE_NOT_FOUND，
+    // 而且是顶层静态引用——连 native 模式都起不来。代价是改灵魂要重新构建身体。
+    noExternal: [/^@deepseek-pet\/soul$/],
     external: [/^@deepseek-ai\//, /^@electron\//, /^node:/],
   },
   {
@@ -71,7 +75,7 @@ export default defineConfig([
     // tsdown 默认把 dependencies/peerDependencies 全部外部化（本包那三个 DSH 专有包正是
     // peerDependencies），所以这里必须先 noExternal 把它们拉回打包图，下面的 alias 才轮得到生效；
     // 否则产物里留下裸 import，在没有 DSH 的环境里 ERR_MODULE_NOT_FOUND。
-    noExternal: [/^@deepseek-ai\/(?:dsh-home-paths|dsh-credentials|dsh-llm)$/],
+    noExternal: [/^@deepseek-ai\/(?:dsh-home-paths|dsh-credentials|dsh-llm)$/, /^@deepseek-pet\/soul$/],
     // 除三个替身外，其余 @deepseek-ai/* 仍视为宿主提供（负向断言）
     external: [/^@electron\//, /^node:/, /^@deepseek-ai\/(?!dsh-home-paths$|dsh-credentials$|dsh-llm$)/],
     alias: {
@@ -97,6 +101,7 @@ export default defineConfig([
     // 动态解析，应用模式永远不走那条路（见 src/host/helper-process.ts 的 import 注释）。
     noExternal: [
       /^@deepseek-ai\/(?:dsh-home-paths|dsh-credentials|dsh-llm)$/,
+      /^@deepseek-pet\/soul$/,
       /^zod$/,
       /^openai$/,
       /^@anthropic-ai\/sdk$/,

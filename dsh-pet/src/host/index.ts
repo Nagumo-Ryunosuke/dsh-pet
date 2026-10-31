@@ -17,6 +17,7 @@ import { createBalancePoll } from './plugin/balance-poll.ts';
 import { createChatMemory } from './plugin/chat-memory.ts';
 import { chatBackendMode } from './soul/mode.ts';
 import { createFakeSoul } from './soul/fake-soul.ts';
+import { createRealSoul } from './soul/real-soul.ts';
 import { registerSoulChatCommand } from './soul/command.ts';
 import { createSessionNotify } from './plugin/session-notify.ts';
 import { createPetLookup } from './plugin/pet-lookup.ts';
@@ -75,14 +76,17 @@ export function apply(ctx: any): void {
     notifyActivityTimers,
     scheduleCompletionNotify,
   } = sessionNotify;
-  // 聊天后端：native = 上游原有生成路径；soul = 同进程假灵魂（M0）。模式在装配期只读一次，
-  // 切换靠重启——两个模式的后端对象从头到尾不是同一份，旧模式的在途结果没有回写通道。
+  // 聊天后端：native = 上游原有生成路径；soul = 真灵魂（@deepseek-pet/soul）；
+  // fake = M0 的纯内存假后端，用来在拿不到模型时验证接线。模式在装配期只读一次，
+  // 切换靠重启——三种后端从头到尾不是同一份对象，旧模式的在途结果没有回写通道。
   // 换后端只换这一个对象：它经 deps 注入路由，并经下方解构进入命令与轮询，上游代码零改动。
   const backendMode = chatBackendMode();
   const chatMemory =
     backendMode === 'soul'
-      ? createFakeSoul({ configPaths, log, state })
-      : createChatMemory({ ctx, configPaths, log, memeDirsFor, playback, state, userRoot });
+      ? createRealSoul({ ctx, configPaths, log, state, userRoot })
+      : backendMode === 'fake'
+        ? createFakeSoul({ configPaths, log, state })
+        : createChatMemory({ ctx, configPaths, log, memeDirsFor, playback, state, userRoot });
   log.info('[dsh-pet] 聊天后端 = ' + backendMode);
   const { lastWhisperAt, publishWhisper, publishSleepTalk, chatWithPet, getActivePetId, setActivePetId } = chatMemory;
 
@@ -110,8 +114,8 @@ export function apply(ctx: any): void {
     ...petLookup,
     ...workStatusBridge,
     ...chatMemory,
-    // 图片能力随后端走：soul（M0 假后端）不支持，路由据此在落盘前拒绝，避免留下孤儿附件。
-    chatSupportsImages: backendMode !== 'soul',
+    // 图片能力随后端走：只有原生路径支持，路由据此在落盘前拒绝，避免留下孤儿附件。
+    chatSupportsImages: backendMode === 'native',
     ...balancePoll,
     ...desktopHelper,
     ...sessionNotify,
@@ -160,9 +164,9 @@ export function apply(ctx: any): void {
 
   registerPetCommand({ ctx, effectivePetList, petDisplayName, resolveActivePetId, setActivePetId });
 
-  // soul 模式换成拒绝式占位命令：上游命令是 fire-and-forget，会先回「已发送」再异步生成，
-  // 在接管模式下那句回执就是假成功。命令入口本轮标为不支持，M0 只保证聊天窗口贯通。
-  if (backendMode === 'soul') {
+  // 非原生模式换成拒绝式占位命令：上游命令是 fire-and-forget，会先回「已发送」再异步生成，
+  // 在接管模式下那句回执就是假成功。命令入口本轮标为不支持，只保证聊天窗口贯通。
+  if (backendMode !== 'native') {
     registerSoulChatCommand({ ctx });
   } else {
     registerChatCommand({ ctx, chatWithPet, log, publishWhisper, resolveActivePetId, sleep, sleepRefusalText });

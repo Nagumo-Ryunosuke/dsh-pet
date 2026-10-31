@@ -103,6 +103,7 @@
   "dependencies": {
     "@andresaya/edge-tts": "^1.9.1",
     "@anthropic-ai/sdk": "0.135.0",
+    "@deepseek-pet/soul": "link:..\\..\\DeepseekHarness",
     "@electron-internal/extract-zip": "^1.0.5",
     "@electron/get": "^5.1.0",
     "openai": "7.39.0",
