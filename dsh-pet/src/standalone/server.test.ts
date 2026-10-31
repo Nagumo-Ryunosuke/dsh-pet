@@ -434,7 +434,10 @@ test('bounded body replay preserves plugin readBody; chunked and stalled inputs 
     port: 0,
     security,
     logger: silent,
-    bodyTimeoutMs: 30,
+    // 300ms 而不是 30ms：1MB 的 chunked 上传和「读满即 413」在赛跑，机器一忙上传本身
+    // 就能超过 30ms，断言就会从 413 变成 408（超时先到）。这里要验的是「超限 → 413」
+    // 这条规则，不是「上传必须在 30ms 内完成」。
+    bodyTimeoutMs: 300,
     routes: [
       {
         kind: 'prefix',

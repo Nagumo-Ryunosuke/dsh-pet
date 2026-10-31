@@ -96,8 +96,11 @@ async function withDeadline<T>(
   task: (signal: AbortSignal) => Promise<T>,
 ): Promise<{ ok: true; value: T } | { ok: false; message: string }> {
   const controller = new AbortController();
+  // **不要 unref**：这条定时器就是「等任务回来的唯一凭据」。它被 unref 之后，事件循环
+  // 一旦没有别的句柄（例如一次识别正好是进程里最后一件事），进程会在超时到点前就静默
+  // 退出，await 的 promise 永远不兑现——表现为测试里随机的「Promise resolution is still
+  // pending」。定时器只在任务未回时存活，任务一结束就在 finally 里被清掉，不存在泄漏。
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  timer.unref();
   const onAbort = (): void => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
