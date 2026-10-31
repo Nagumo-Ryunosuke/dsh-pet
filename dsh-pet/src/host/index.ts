@@ -15,6 +15,9 @@ import { registerSessionWatch } from './plugin/session-watch.ts';
 import { createDesktopHelper } from './plugin/desktop-helper.ts';
 import { createBalancePoll } from './plugin/balance-poll.ts';
 import { createChatMemory } from './plugin/chat-memory.ts';
+import { chatBackendMode } from './soul/mode.ts';
+import { createFakeSoul } from './soul/fake-soul.ts';
+import { registerSoulChatCommand } from './soul/command.ts';
 import { createSessionNotify } from './plugin/session-notify.ts';
 import { createPetLookup } from './plugin/pet-lookup.ts';
 import { createDownloadReport } from './plugin/download-report.ts';
@@ -72,7 +75,15 @@ export function apply(ctx: any): void {
     notifyActivityTimers,
     scheduleCompletionNotify,
   } = sessionNotify;
-  const chatMemory = createChatMemory({ ctx, configPaths, log, memeDirsFor, playback, state, userRoot });
+  // 聊天后端：native = 上游原有生成路径；soul = 同进程假灵魂（M0）。模式在装配期只读一次，
+  // 切换靠重启——两个模式的后端对象从头到尾不是同一份，旧模式的在途结果没有回写通道。
+  // 换后端只换这一个对象：它经 deps 注入路由，并经下方解构进入命令与轮询，上游代码零改动。
+  const backendMode = chatBackendMode();
+  const chatMemory =
+    backendMode === 'soul'
+      ? createFakeSoul({ configPaths, log, state })
+      : createChatMemory({ ctx, configPaths, log, memeDirsFor, playback, state, userRoot });
+  log.info('[dsh-pet] 聊天后端 = ' + backendMode);
   const { lastWhisperAt, publishWhisper, publishSleepTalk, chatWithPet, getActivePetId, setActivePetId } = chatMemory;
 
   const balancePoll = createBalancePoll({ ctx, configPaths, getActivePetId, log, state });
@@ -147,7 +158,13 @@ export function apply(ctx: any): void {
 
   registerPetCommand({ ctx, effectivePetList, petDisplayName, resolveActivePetId, setActivePetId });
 
-  registerChatCommand({ ctx, chatWithPet, log, publishWhisper, resolveActivePetId, sleep, sleepRefusalText });
+  // soul 模式换成拒绝式占位命令：上游命令是 fire-and-forget，会先回「已发送」再异步生成，
+  // 在接管模式下那句回执就是假成功。命令入口本轮标为不支持，M0 只保证聊天窗口贯通。
+  if (backendMode === 'soul') {
+    registerSoulChatCommand({ ctx });
+  } else {
+    registerChatCommand({ ctx, chatWithPet, log, publishWhisper, resolveActivePetId, sleep, sleepRefusalText });
+  }
 
   // 待办提醒：随插件生命周期起停；锁被第三方持有时由 pickReminderSpeaker 跳过该宠物。
   // 播报开关现读现用：改配置后下一次提醒即生效，不必重启。
