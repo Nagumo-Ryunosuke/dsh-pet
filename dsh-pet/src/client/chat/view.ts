@@ -7,7 +7,7 @@
 import { HISTORY_ROUNDS, memoryBoundaryIndex } from './api.ts';
 import type { ChatPanelRuntime } from './runtime.ts';
 import type { ChatPanelState } from './types.ts';
-import { composerNode, confirmNode, orphansNode, personaNode, toolsNode } from './view-node.ts';
+import { composerNode, confirmNode, memoryNode, orphansNode, personaNode, toolsNode } from './view-node.ts';
 import { roundNode } from './view-message.ts';
 
 /** 宠物标签条：点击切换对话。 */
@@ -118,12 +118,14 @@ export function buildPanel(rt: ChatPanelRuntime, state: ChatPanelState): unknown
     // Esc 收起卷帘：焦点在按钮上还是在输入框里都收得到（事件冒泡到根节点）
     onKeyDown: (event: { key: string }) => {
       if (state.personaOpen && event.key === 'Escape') state.closePersona();
+      if (state.memoryOpen && event.key === 'Escape') state.closeMemory();
     },
     children: [
       tabsNode(h, state),
       orphansNode(h, state),
       toolsNode(h, state),
       personaNode(h, state),
+      memoryNode(h, state),
       listNode(rt, state),
       confirmNode(rt, state),
       previewNode(rt, state),

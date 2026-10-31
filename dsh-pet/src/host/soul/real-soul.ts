@@ -43,6 +43,7 @@ import type { PetImageRef } from '../image-attachment.ts';
 import type { ChatMemory } from '../plugin/chat-memory.ts';
 import type { HostContext } from '../plugin/context.ts';
 import type { HostSetup } from '../plugin/setup.ts';
+import type { PetRouteDeps } from '../routes/types.ts';
 
 /** 指定人格文件的环境变量（不设则用用户数据目录下的 persona.yaml）。 */
 export const PERSONA_ENV = 'DSH_PET_PERSONA';
@@ -64,6 +65,10 @@ export type RealSoul = ChatMemory & {
   readonly backend: 'soul';
   /** 生效的人格 id；人格不可用时为 `undefined`。 */
   readonly personaId: string | undefined;
+  /** 列出 / 检索长期记忆；存储不可用时为 `undefined`（端点会明确说「不提供」）。 */
+  readonly listMemories: PetRouteDeps['listMemories'];
+  /** 删除若干条记忆。 */
+  readonly deleteMemories: PetRouteDeps['deleteMemories'];
 };
 
 /** 与上游一致：条目级 `chatMemoryRounds`，非法或缺失回落 5。 */
@@ -163,6 +168,8 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   const loaded = readFirst(candidates);
   let soul: Soul | null = null;
   let personaId: string | undefined;
+  // 记忆存储提到函数作用域：端点的列出/删除也要用它，不能困在人格可用的分支里
+  let events: EventStore | null = null;
   if (loaded.ok) {
     personaId = loaded.persona.personaId;
     const echo = process.env[MODEL_ENV] === 'echo';
@@ -189,28 +196,34 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
           },
         };
     // 历史与记忆：落库优先，失败退回内存（见 openStores 的说明）
-    const { turns, events, file: storeFile } = openStores(userRoot, log);
+    const { turns, events: opened, file: storeFile } = openStores(userRoot, log);
+    events = opened;
     if (storeFile !== null) log.info(`[dsh-pet][soul] 历史落库：${storeFile}`);
+
+    // 记忆能力先在块外算好：条件展开（...?(x):{}）会让 TypeScript 丢掉上下文类型，
+    // 回调参数全变隐式 any——与其到处标注，不如把可空性收敛到一个对象上
+    const memoryCapabilities =
+      opened === null
+        ? { memory: undefined, recall: undefined }
+        : {
+            // 长期记忆：每轮落两条事件，删聊天时同步遗忘。库不可用时不挂，聊天照常
+            memory: createEventRecorder(opened, log),
+            // 召回：按当前输入查事件库，按默认预算裁剪（最多 5 条 / 400 token / 单条 120）
+            recall: (petId: string, query: string): RecalledMemory[] =>
+              trimToBudget(opened.search(petId, query)).map((hit) => ({
+                id: hit.event.id,
+                occurredAt: hit.event.occurredAt,
+                role: hit.event.role,
+                text: hit.event.text,
+              })),
+          };
 
     soul = createSoul({
       persona: loaded.persona,
       model,
       // 历史落库（`<userRoot>/soul.db`）：重启后还能接上，这是 M1 第二阶段的目标
       history: turns,
-      // 长期记忆：每轮落两条事件，删聊天时同步遗忘。库不可用时不挂，聊天照常
-      ...(events === null
-        ? {}
-        : {
-            memory: createEventRecorder(events, log),
-            // 召回：按当前输入查事件库，按默认预算裁剪（最多 5 条 / 400 token / 单条 120）
-            recall: (petId: string, query: string): RecalledMemory[] =>
-              trimToBudget(events.search(petId, query)).map((hit) => ({
-                id: hit.event.id,
-                occurredAt: hit.event.occurredAt,
-                role: hit.event.role,
-                text: hit.event.text,
-              })),
-          }),
+      ...memoryCapabilities,
       log,
     });
     log.info(`[dsh-pet][soul] 人格已加载 id=${personaId} v=${loaded.persona.version}（${loaded.file}）`);
@@ -309,6 +322,33 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     publishSleepTalk,
     chatWithPet,
     deleteHistory,
+    // 记忆可见化：列出 / 检索 / 删除走的就是召回用的同一个存储与排序，
+    // 面板里看到的就是她会想起来的
+    listMemories:
+      events === null
+        ? undefined
+        : async (petId, query, limit) => {
+            const found =
+              query === undefined
+                ? events.list(petId, { limit, order: 'desc' })
+                : events.search(petId, query, { candidateLimit: limit }).map((hit) => hit.event);
+            return found.map((one) => ({
+              id: one.id,
+              occurredAt: one.occurredAt,
+              role: one.role,
+              text: one.text,
+              kind: one.kind,
+              source: one.source,
+            }));
+          },
+    deleteMemories:
+      events === null
+        ? undefined
+        : async (petId, ids) => {
+            const removed = events.softDelete(petId, ids);
+            log.info(`[dsh-pet][soul] 删除记忆 pet=${petId} removed=${removed}`);
+            return removed;
+          },
     orphanHistory: async () => [],
     deleteOrphans: async () => ({ ok: true as const, pets: 0, messages: 0 }),
     getActivePetId: () => activePetId,

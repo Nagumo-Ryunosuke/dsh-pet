@@ -10,6 +10,70 @@ import { px, SIZE } from './metrics.ts';
 /** 面板样式（选择器前缀 `pet-chat`，避免与 DSH 或其它插件撞名）。 */
 export const PANEL_CSS = `
 .pet-chat {
+}
+
+/* 记忆卷帘：与人设卷帘同一套 0fr→1fr 展开过渡，夹层裁剪、正文层放边框 */
+.pet-chat-memory-drawer {
+  display: grid;
+  grid-template-rows: 0fr;
+  flex: 0 0 auto;
+  transition: grid-template-rows var(--ds-transition-duration-fast) var(--ds-ease-in-out);
+}
+
+.pet-chat-memory-drawer.is-open {
+  grid-template-rows: 1fr;
+}
+
+.pet-chat-memory-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pet-chat-memory-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: ${px(SIZE.gapTight)};
+  padding: ${px(SIZE.bubblePadY)} ${px(SIZE.bubblePadX)};
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-s-14);
+}
+
+.pet-chat-memory-item {
+  display: flex;
+  align-items: baseline;
+  gap: ${px(SIZE.gapTight)};
+  padding: ${px(4)} 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-s-14);
+}
+
+.pet-chat-memory-when {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-s-12);
+}
+
+.pet-chat-memory-text {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.pet-chat-memory-del {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-s-12);
+  cursor: pointer;
+}
+
+.pet-chat-memory-del:hover {
+  color: var(--dsw-alias-label-primary);
+}
   display: flex;
   flex-direction: column;
   height: 100%;

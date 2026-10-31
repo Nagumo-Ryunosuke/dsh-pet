@@ -9,7 +9,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createSendActions, type ActionPorts } from './actions.ts';
+import { createMemoryActions, createSendActions, type ActionPorts } from './actions.ts';
 import type { PanelData } from './types.ts';
 
 /** 造一份够用的面板状态快照。 */
@@ -67,11 +67,18 @@ async function settle(): Promise<void> {
 }
 
 /** 桩 fetch：按序回放给定的响应体，并收集每个请求体。 */
-function stubFetch(responses: unknown[]): { bodies: Record<string, unknown>[]; restore: () => void } {
+function stubFetch(responses: unknown[]): {
+  bodies: Record<string, unknown>[];
+  urls: string[];
+  restore: () => void;
+} {
   const bodies: Record<string, unknown>[] = [];
+  const urls: string[] = [];
   const original = globalThis.fetch;
   let index = 0;
-  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    urls.push(String(url));
+    // GET（记忆卷帘）没有请求体：占一个空对象，让 bodies 与 urls 的下标始终对齐
     bodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
     const payload = responses[Math.min(index, responses.length - 1)];
     index += 1;
@@ -79,6 +86,7 @@ function stubFetch(responses: unknown[]): { bodies: Record<string, unknown>[]; r
   }) as typeof fetch;
   return {
     bodies,
+    urls,
     restore: () => {
       globalThis.fetch = original;
     },
@@ -161,6 +169,96 @@ describe('发送动作的幂等键', () => {
       assert.equal(captured.bodies.length, 0);
       assert.equal(box.state.requestId, null);
       assert.equal(box.state.busy, false);
+    } finally {
+      captured.restore();
+    }
+  });
+});
+
+describe('记忆卷帘的动作', () => {
+  /** 带好记忆相关初始状态的面板。 */
+  function memoryPanel(): PanelData {
+    return panel({ petId: 'main', memoryOpen: false, memories: [], memoryQuery: '', memoryLoading: false });
+  }
+
+  test('展开时取数；再点一下收起不取数', async () => {
+    const captured = stubFetch([
+      { ok: true, events: [{ id: 'e1', occurredAt: 1000, role: 'user', text: '记得的事' }] },
+    ]);
+    const { ports, box } = makePorts(memoryPanel());
+    const actions = createSendActions(ports);
+    const memory = createMemoryActions(ports);
+    void actions;
+    try {
+      memory.toggleMemory();
+      await settle();
+      assert.equal(box.state.memoryOpen, true);
+      assert.equal(box.state.memories.length, 1);
+      assert.equal(box.state.memoryLoading, false, '取完要解锁');
+
+      const callsAfterOpen = captured.bodies.length;
+      memory.toggleMemory();
+      await settle();
+      assert.equal(box.state.memoryOpen, false);
+      assert.equal(captured.bodies.length, callsAfterOpen, '收起不该再取数');
+    } finally {
+      captured.restore();
+    }
+  });
+
+  test('检索词为空时浏览全部（不带 q），带词时透传', async () => {
+    const captured = stubFetch([{ ok: true, events: [] }]);
+    const { ports } = makePorts(memoryPanel());
+    const memory = createMemoryActions(ports);
+    try {
+      memory.toggleMemory();
+      await settle();
+      memory.searchMemories('  豆豆  ');
+      await settle();
+      assert.match(captured.urls[captured.urls.length - 1] ?? '', /q=%E8%B1%86%E8%B1%86/, '检索词要透传（trim 后编码）');
+    } finally {
+      captured.restore();
+    }
+  });
+
+  test('删除一条后按当前检索词重取，条数以服务端为准', async () => {
+    // 第 1 次响应 = 首次展开；第 2 次 = DELETE；第 3 次 = 删后重取
+    const captured = stubFetch([
+      {
+        ok: true,
+        events: [
+          { id: 'e1', occurredAt: 1000, role: 'user', text: '旧' },
+          { id: 'e2', occurredAt: 2000, role: 'user', text: '新' },
+        ],
+      },
+      { ok: true, removed: 1 },
+      { ok: true, events: [{ id: 'e2', occurredAt: 2000, role: 'user', text: '新' }] },
+    ]);
+    const { ports, box } = makePorts(memoryPanel());
+    const memory = createMemoryActions(ports);
+    try {
+      memory.toggleMemory();
+      await settle();
+      assert.equal(box.state.memories.length, 2);
+
+      memory.deleteMemory('e1');
+      await settle();
+      assert.equal(box.state.memories.length, 1, '以服务端重取的结果为准');
+      assert.equal(box.state.memories[0]?.id, 'e2');
+    } finally {
+      captured.restore();
+    }
+  });
+
+  test('后端不提供记忆时报错给用户，而不是静默空列表', async () => {
+    const captured = stubFetch([{ ok: false, message: '当前对话后端不提供长期记忆' }]);
+    const { ports, box } = makePorts(memoryPanel());
+    const memory = createMemoryActions(ports);
+    try {
+      memory.toggleMemory();
+      await settle();
+      assert.equal(box.state.memories.length, 0);
+      assert.match(box.state.error, /不提供/);
     } finally {
       captured.restore();
     }

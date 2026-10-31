@@ -6,7 +6,7 @@
  */
 import type { EncodedImage } from '../../shared/chat/encode.ts';
 import type { Pet } from '../../shared/types.ts';
-import type { ChatMessageView, ChatRound, OrphanHistory } from './api.ts';
+import type { ChatMessageView, ChatRound, MemoryItemView, OrphanHistory } from './api.ts';
 
 /** 面板的全部可渲染字段；一次性替换，避免多个 useState 各提交一半。 */
 export interface PanelData {
@@ -44,6 +44,14 @@ export interface PanelData {
   readonly personas: Readonly<Record<string, string>>;
   /** 「人设」卷帘是否展开：收起时内容留在 DOM 里、高度归零，展开过渡才播得起来。 */
   readonly personaOpen: boolean;
+  /** 「记忆」卷帘是否展开（与人设卷帘同一形态）。 */
+  readonly memoryOpen: boolean;
+  /** 卷帘里的记忆条目：不带关键词 = 最新在前，带关键词 = 召回排序。 */
+  readonly memories: readonly MemoryItemView[];
+  /** 卷帘里的检索词；空串 = 浏览全部。 */
+  readonly memoryQuery: string;
+  /** 卷帘正在取数。 */
+  readonly memoryLoading: boolean;
   /** 正在点播的那一轮与阶段；null = 没有在播。同一时刻只播一条。 */
   readonly speaking: { readonly ts: number; readonly phase: 'loading' | 'playing' | 'failed' } | null;
 }
@@ -69,6 +77,14 @@ export interface ChatPanelState extends PanelData {
   readonly togglePersona: () => void;
   /** 收起人设卷帘（Esc）。 */
   readonly closePersona: () => void;
+  /** 展开 / 收起记忆卷帘（首次展开会取数）。 */
+  readonly toggleMemory: () => void;
+  /** 收起记忆卷帘。 */
+  readonly closeMemory: () => void;
+  /** 按关键词检索记忆；空串 = 浏览全部。 */
+  readonly searchMemories: (query: string) => void;
+  /** 删除一条记忆，然后按当前检索词重取。 */
+  readonly deleteMemory: (id: string) => void;
   /** 消息列表容器：滚动到底部要用。 */
   readonly listRef: { current: HTMLDivElement | null };
   /** 输入框：内容变高时要直接改它的 height。 */

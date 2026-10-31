@@ -18,6 +18,22 @@ import type { PoseStore } from '../pose.ts';
 import type { SleepStore } from '../sleep.ts';
 import type { PollStateStore } from '../state.ts';
 import type { VoiceTarget } from '../surface.ts';
+
+/** 一条长期记忆（列表与检索共用的形状）。 */
+export interface MemoryItem {
+  /** 稳定 id，删除按它定位。 */
+  readonly id: string;
+  /** 发生时刻（毫秒）。 */
+  readonly occurredAt: number;
+  /** 说话方：`user` / `assistant`。 */
+  readonly role: string;
+  /** 正文。 */
+  readonly text: string;
+  /** 事件种类（`user_message` / `assistant_message`）。 */
+  readonly kind: string;
+  /** 来源（`chat` = 用户在宠物聊天里主动说的）。 */
+  readonly source: string;
+}
 import type { TodoStore } from '../todo/store.ts';
 import type { HearService } from '../voice/hear.ts';
 import type { VoiceService } from '../voice/speak.ts';
@@ -158,6 +174,15 @@ export interface PetRouteDeps {
   /** 当前对话后端是否支持图片附件。`false` 时路由在**落盘之前**就拒绝，不产生孤儿附件；
    *  缺省视为支持（原生路径与既有调用方行为不变）。 */
   readonly chatSupportsImages?: boolean;
+  /**
+   * 列出（`query` 缺省）或检索（`query` 给定）某只宠物的长期记忆。
+   *
+   * 可选：原生后端没有独立记忆层。缺省时记忆端点返回明确的「不提供」，而不是假装空列表——
+   * 用户会以为她真的什么都不记得。
+   */
+  readonly listMemories?: (petId: string, query: string | undefined, limit: number) => Promise<readonly MemoryItem[]>;
+  /** 删除若干条记忆（软删除：退出检索，原文留痕）。缺省时端点同样返回「不提供」。 */
+  readonly deleteMemories?: (petId: string, ids: readonly string[]) => Promise<number>;
   /** 删除该宠物的对话记忆：ts 缺省 = 清空全部，否则只删命中的轮（成对）。 */
   readonly deleteHistory: (
     petId: string,

@@ -7,7 +7,7 @@
  */
 import { speakText } from '../../shared/voice.ts';
 import { fetchHistory, groupRounds, playAction as requestPlayAction } from './api.ts';
-import { createHistoryActions, createSendActions, createShellActions } from './actions.ts';
+import { createHistoryActions, createMemoryActions, createSendActions, createShellActions } from './actions.ts';
 import { createChatEffects } from './effects.ts';
 import type { ChatPanelRuntime } from './runtime.ts';
 import type { ChatPanelState, PanelData } from './types.ts';
@@ -35,6 +35,10 @@ const INITIAL: PanelData = {
   roundsByEntry: {},
   personas: {},
   personaOpen: false,
+  memoryOpen: false,
+  memories: [],
+  memoryQuery: '',
+  memoryLoading: false,
   speaking: null,
 };
 
@@ -72,6 +76,7 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
 
     const ports = { read: () => data, patch, fail, reload };
     const history = createHistoryActions(ports);
+    const memory = createMemoryActions(ports);
     const shell = createShellActions({ ports, history, listRef, pageRounds: PAGE_ROUNDS });
     const pet = data.pets.find((one) => one.id === data.petId);
     const allRounds = groupRounds(data.messages);
@@ -81,6 +86,7 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
       ...data,
       ...createSendActions(ports),
       ...history,
+      ...memory,
       ...shell,
       rounds,
       hasOlder: allRounds.length > rounds.length,
@@ -90,6 +96,8 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
       persona: data.personas[data.petId] ?? '',
       togglePersona: () => patch({ personaOpen: !data.personaOpen }),
       closePersona: () => patch({ personaOpen: false }),
+      toggleMemory: () => memory.toggleMemory(),
+      closeMemory: () => patch({ memoryOpen: false }),
       listRef,
       draftRef,
       pickPet: (petId: string) => {
@@ -101,6 +109,11 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
           pending: null,
           visibleRounds: PAGE_ROUNDS,
           error: '',
+          // 换宠 = 换记忆：卷帘收起并清空，展开时会按新宠物重新取
+          memoryOpen: false,
+          memories: [],
+          memoryQuery: '',
+          memoryLoading: false,
         });
         void reload(petId);
       },

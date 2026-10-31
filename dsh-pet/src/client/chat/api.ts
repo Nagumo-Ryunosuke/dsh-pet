@@ -337,3 +337,67 @@ export async function clearOrphans(): Promise<
   if (body?.ok === true) return { ok: true, pets: Number(body.pets ?? 0), messages: Number(body.messages ?? 0) };
   return { ok: false, message: typeof body?.message === 'string' ? body.message : 'HTTP ' + res.status };
 }
+
+/** 一条长期记忆（`GET /memory` 的条目，只取显示用到的字段）。 */
+export interface MemoryItemView {
+  /** 稳定 id，删除按它定位。 */
+  readonly id: string;
+  /** 发生时刻（毫秒）。 */
+  readonly occurredAt: number;
+  /** 说话方：`user` / `assistant`。 */
+  readonly role: string;
+  /** 正文。 */
+  readonly text: string;
+}
+
+/**
+ * 列出或检索某只宠物的长期记忆。
+ *
+ * 带关键词时走的就是召回用的同一条检索链路——这里看到的就是她会想起来的，所见即所得。
+ *
+ * @param petId - 宠物 id。
+ * @param query - 检索词；缺省浏览全部（最新在前）。
+ * @returns 记忆条目。
+ * @throws 后端不提供记忆、请求失败或响应非法时。
+ */
+export async function fetchMemories(petId: string, query?: string): Promise<MemoryItemView[]> {
+  const q = query === undefined || query.trim() === '' ? '' : '&q=' + encodeURIComponent(query.trim());
+  const url = ROUTE_PATH + '/memory?pet=' + encodeURIComponent(petId) + q;
+  const res = await fetch(url, { cache: 'no-store' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body === null || typeof body !== 'object') throw new Error('memory HTTP ' + res.status);
+  if (body.ok !== true) {
+    throw new Error(typeof body.message === 'string' ? body.message : 'memory HTTP ' + res.status);
+  }
+  const raw = Array.isArray(body.events) ? body.events : [];
+  return raw.flatMap((one) => {
+    if (one === null || typeof one !== 'object') return [];
+    const item = one as Record<string, unknown>;
+    if (typeof item.id !== 'string' || typeof item.text !== 'string') return [];
+    return [
+      {
+        id: item.id,
+        occurredAt: typeof item.occurredAt === 'number' ? item.occurredAt : 0,
+        role: typeof item.role === 'string' ? item.role : 'user',
+        text: item.text,
+      },
+    ];
+  });
+}
+
+/**
+ * 删除若干条长期记忆（软删除：她再也不会提起，但原文留痕）。
+ *
+ * @param petId - 宠物 id。
+ * @param ids - 要删除的记忆 id。
+ * @returns 实际删除条数，或失败文案。
+ * @throws 网络中断时。
+ */
+export async function deleteMemoriesById(petId: string, ids: readonly string[]): Promise<DeleteResult> {
+  if (ids.length === 0) return { ok: true, removed: 0 };
+  const query = ids.map((value) => '&id=' + encodeURIComponent(value)).join('');
+  const res = await fetch(ROUTE_PATH + '/memory?pet=' + encodeURIComponent(petId) + query, { method: 'DELETE' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body?.ok === true) return { ok: true, removed: Number(body.removed ?? 0) };
+  return { ok: false, message: typeof body?.message === 'string' ? body.message : 'HTTP ' + res.status };
+}

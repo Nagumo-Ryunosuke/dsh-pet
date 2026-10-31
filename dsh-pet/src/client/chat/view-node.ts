@@ -35,6 +35,9 @@ export function orphansNode(h: ChatPanelRuntime['h'], state: ChatPanelState): un
 /** 卷帘块与按钮共用的 id：`aria-controls` 要指向它。 */
 const PERSONA_PANEL_ID = 'pet-chat-persona';
 
+/** 记忆卷帘块与按钮共用的 id。 */
+const MEMORY_PANEL_ID = 'pet-chat-memory';
+
 /** 「人设」按钮：点一下展开 / 收起工具栏下方那块卷帘。 */
 function personaButton(h: ChatPanelRuntime['h'], state: ChatPanelState): unknown {
   return h('button', {
@@ -67,12 +70,84 @@ export function personaNode(h: ChatPanelRuntime['h'], state: ChatPanelState): un
   });
 }
 
+/** 一条记忆显示的时刻：`10-31`，年份几乎不会变，省宽度。 */
+function memoryDay(ts: number): string {
+  const text = new Date(ts).toISOString();
+  return text.slice(5, 10);
+}
+
+/**
+ * 记忆卷帘：她能想起来的东西，按召回的同一条链路列出，可检索、可单条删除。
+ *
+ * 与人设卷帘同一形态（在正常流里展开，把列表顶下去）。
+ */
+export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unknown {
+  const body = state.memoryLoading
+    ? [h('div', { key: 'loading', className: 'pet-chat-hint', children: '加载中…' })]
+    : state.memories.length === 0
+      ? [
+          h('div', {
+            key: 'empty',
+            className: 'pet-chat-hint',
+            children: state.memoryQuery === '' ? '还没有记住什么' : '没有想起与这个词相关的记忆',
+          }),
+        ]
+      : state.memories.map((one) =>
+          h('div', {
+            key: one.id,
+            className: 'pet-chat-memory-item',
+            children: [
+              h('span', {
+                className: 'pet-chat-memory-when',
+                children: memoryDay(one.occurredAt) + '・' + (one.role === 'user' ? '你说过' : '她说过'),
+              }),
+              h('span', { className: 'pet-chat-memory-text', children: one.text }),
+              h('button', {
+                type: 'button',
+                className: 'pet-chat-memory-del',
+                'aria-label': '删除这条记忆',
+                onClick: () => state.deleteMemory(one.id),
+                children: '忘掉',
+              }),
+            ],
+          }),
+        );
+  return h('div', {
+    id: MEMORY_PANEL_ID,
+    className: 'pet-chat-memory-drawer' + (state.memoryOpen ? ' is-open' : ''),
+    'aria-hidden': String(!state.memoryOpen),
+    children: [
+      h('div', {
+        className: 'pet-chat-memory-clip',
+        children: [
+          h('input', {
+            className: 'pet-chat-memory-search',
+            type: 'search',
+            value: state.memoryQuery,
+            placeholder: '搜她记得的事…（空 = 全部）',
+            onChange: (event: { target: { value: string } }) => state.searchMemories(event.target.value),
+          }),
+          ...body,
+        ],
+      }),
+    ],
+  });
+}
+
 /** 工具栏：多选开关、删除选中（带数量）与清空历史；删除都先走面板内确认条。 */
 export function toolsNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unknown {
   return h('div', {
     className: 'pet-chat-tools',
     children: [
       personaButton(h, state),
+      h('button', {
+        type: 'button',
+        className: 'pet-chat-tool',
+        'aria-expanded': String(state.memoryOpen),
+        'aria-controls': MEMORY_PANEL_ID,
+        onClick: () => state.toggleMemory(),
+        children: '记忆',
+      }),
       h('button', {
         type: 'button',
         className: 'pet-chat-tool',
