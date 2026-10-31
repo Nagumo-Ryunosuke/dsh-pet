@@ -41,6 +41,7 @@
 - `src/host/routes/facts.ts` + `types.ts`：事实条目额外带 `sources`（仍存活的来源条数）与 `from`（最新那句原文，截 48 字）；`/memory?q=` 的条目带 `via`（`fts` / `substring` / `decomposed`，浏览时不带）。
 - `src/host/routes/summaries.ts`：`GET /summaries` 只列 active 摘要（只读，DELETE 回 405）；面板卷帘多一段「聊过的大概」。
 - `src/host/soul/real-soul.ts`：`openStores` 多开一个 `SqliteSummaryStore`（同库同句柄），并把它同时传给记录器（删聊天时转 `dirty`）、抽取器（顺手写梗概）与召回（事实 → 摘要 → 原文）。
+- 摘要重建：`createSummaryRebuilder` 由灵魂侧提供，宿主挂进维护定时器的 `rebuild` 钩子；只在该宠物没有待抽取事件时才跑，任务行 `jobs.type = summarize`，与抽取共用每日预算。
 - `src/client/chat/`：发送携带幂等键；「记忆」卷帘里把「她知道的事」（事实，可点「不对」）与「聊过的」（原文，可「忘掉」）分开展示。
 - `tsdown.config.mjs`：`@deepseek-pet/soul`、`zod`、`openai`、`@anthropic-ai/sdk` 改为内联（`noExternal`）——灵魂包不在任何 registry 上，插件按目录拷贝安装，外部引用会断。
 - `package.json` / `pnpm-lock.yaml`：依赖 `@deepseek-pet/soul`（`link:` 指向灵魂仓库，仅开发期）。
