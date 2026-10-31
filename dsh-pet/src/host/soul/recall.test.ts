@@ -146,3 +146,63 @@ describe('召回预算可配置', () => {
     );
   });
 });
+
+describe('摘要进入召回', () => {
+  /** 造一条摘要。 */
+  function summary(id: string, text: string, periodEnd: number) {
+    return {
+      id,
+      petId: 'main',
+      periodStart: periodEnd - 1000,
+      periodEnd,
+      text,
+      status: 'active' as const,
+      sourceVersion: 1,
+      createdAt: periodEnd,
+      updatedAt: periodEnd,
+    };
+  }
+
+  test('顺序是事实 → 摘要 → 原文；摘要不按关键词筛', () => {
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '今天好累', // 与摘要、事实都不同词
+      facts: [fact('f1', '用户', '喜欢', '手冲咖啡')],
+      // selectFacts 不会命中这条事实，这里只验排序：传一个能命中的查询
+      summaries: [summary('s1', '之前在做毕设，聊了很多猫。', 500)],
+      searchEvents: () => [hit('e1', '今天加班到很晚')],
+    });
+    assert.deepEqual(
+      recalled.map((one) => one.role),
+      ['summary', 'user'],
+      '摘要排在原文之前；事实因不相关没有进来',
+    );
+    assert.equal(recalled[0]?.text, '之前在做毕设，聊了很多猫。');
+  });
+
+  test('最多两段摘要：再多会把最近的原话挤掉', () => {
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '随便聊聊',
+      facts: [],
+      summaries: [summary('s1', '一', 300), summary('s2', '二', 200), summary('s3', '三', 100)],
+      searchEvents: () => [],
+    });
+    assert.deepEqual(
+      recalled.map((one) => one.id),
+      ['s1', 's2'],
+    );
+  });
+
+  test('摘要按 periodEnd 参与窗口去重：刚聊过的时段不再用梗概重述', () => {
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '随便聊聊',
+      facts: [],
+      summaries: [summary('s1', '刚聊过的事', 5000)],
+      searchEvents: () => [],
+      // 预算足够，这里只确认摘要被当作普通条目返回；窗口去重在 soul 侧按 occurredAt 过滤
+    });
+    assert.equal(recalled[0]?.occurredAt, 5000, 'occurredAt 用 periodEnd，供窗口去重判断');
+  });
+});

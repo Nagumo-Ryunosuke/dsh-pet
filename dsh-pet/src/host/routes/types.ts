@@ -66,6 +66,18 @@ export interface FactItem {
   readonly from?: { readonly text: string; readonly occurredAt: number };
 }
 
+/** 一段对话摘要（`GET /summaries` 的条目）。 */
+export interface SummaryItem {
+  /** 稳定 id（「宠物 + 起止时刻」确定）。 */
+  readonly id: string;
+  /** 覆盖范围起点（毫秒）。 */
+  readonly periodStart: number;
+  /** 覆盖范围终点（毫秒）。 */
+  readonly periodEnd: number;
+  /** 梗概正文。 */
+  readonly text: string;
+}
+
 /** 一次路由调用的输入：URL 已解析，`rest` 是去掉前缀并解码后的路径。 */
 export interface RouteInput {
   /** 完整请求 URL（含查询串）。 */
@@ -216,6 +228,13 @@ export interface PetRouteDeps {
    * 可选：原生/假后端没有事实层。缺省时 `/facts` 明确回「不提供」，而不是空列表。
    */
   readonly listFacts?: (petId: string, limit: number) => Promise<readonly FactItem[]>;
+  /**
+   * 列出某只宠物的 active 摘要（她「记得聊过什么」）。
+   *
+   * 只给 `active`：来源被删过的摘要转 `dirty` 后不再列出，也不参与召回——
+   * 界面上看不见的东西，提示词里也不该有。
+   */
+  readonly listSummaries?: (petId: string, limit: number) => Promise<readonly SummaryItem[]>;
   /**
    * 把若干条事实标记为「不对」（置 `superseded` 并关闭有效区间）。
    *

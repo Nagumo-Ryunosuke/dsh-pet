@@ -6,7 +6,14 @@
  */
 import type { EncodedImage } from '../../shared/chat/encode.ts';
 import type { Pet } from '../../shared/types.ts';
-import type { ChatMessageView, ChatRound, FactItemView, MemoryItemView, OrphanHistory } from './api.ts';
+import type {
+  ChatMessageView,
+  ChatRound,
+  FactItemView,
+  MemoryItemView,
+  OrphanHistory,
+  SummaryItemView,
+} from './api.ts';
 
 /** 面板的全部可渲染字段；一次性替换，避免多个 useState 各提交一半。 */
 export interface PanelData {
@@ -48,6 +55,8 @@ export interface PanelData {
   readonly memoryOpen: boolean;
   /** 卷帘里的记忆条目：不带关键词 = 最新在前，带关键词 = 召回排序。 */
   readonly memories: readonly MemoryItemView[];
+  /** 卷帘里的对话摘要（只读，最近的在前）。 */
+  readonly summaries: readonly SummaryItemView[];
   /** 卷帘里的长期事实（她「确定知道」的事）：与聊天原文分开列出。 */
   readonly facts: readonly FactItemView[];
   /** 卷帘里的检索词；空串 = 浏览全部。 */

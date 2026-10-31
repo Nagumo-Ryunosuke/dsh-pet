@@ -14,6 +14,7 @@ import {
   deleteRounds,
   fetchFacts,
   fetchMemories,
+  fetchSummaries,
   sendMessage,
   type DeleteResult,
 } from './api.ts';
@@ -234,12 +235,14 @@ export function createMemoryActions(ports: ActionPorts): {
     ports.patch({ memoryLoading: true });
     try {
       // 事实层单独兜底：旧版后端没有 /facts 时，记忆列表照常可用，只是事实段为空
-      const [items, facts] = await Promise.all([
+      const [items, facts, summaries] = await Promise.all([
         fetchMemories(data.petId, query),
         fetchFacts(data.petId).catch(() => []),
+        // 摘要单独兜底：旧后端没有 /summaries 时，事实与记忆照常显示
+        fetchSummaries(data.petId).catch(() => []),
       ]);
       if (token !== searchToken) return; // 已被更新的请求取代，丢掉这份结果
-      ports.patch({ memories: items, facts });
+      ports.patch({ memories: items, facts, summaries });
     } catch (error) {
       if (token !== searchToken) return;
       ports.fail(error);

@@ -421,6 +421,48 @@ export interface FactItemView {
   readonly from?: { readonly text: string; readonly occurredAt: number };
 }
 
+/** 一段对话摘要（`GET /summaries` 的条目）。 */
+export interface SummaryItemView {
+  readonly id: string;
+  /** 覆盖范围起点（毫秒）。 */
+  readonly periodStart: number;
+  /** 覆盖范围终点（毫秒）。 */
+  readonly periodEnd: number;
+  readonly text: string;
+}
+
+/**
+ * 列出某只宠物的对话摘要（只读）。
+ *
+ * 后端不提供时回空数组：摘要段在旧后端上就是空的，不影响记忆列表本身。
+ *
+ * @param petId - 宠物 id。
+ * @returns 摘要条目，最近的在前。
+ * @throws 网络中断时。
+ */
+export async function fetchSummaries(petId: string): Promise<SummaryItemView[]> {
+  const res = await fetch(ROUTE_PATH + '/summaries?pet=' + encodeURIComponent(petId), { cache: 'no-store' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body === null || typeof body !== 'object') throw new Error('summaries HTTP ' + res.status);
+  if (body.ok !== true) {
+    throw new Error(typeof body.message === 'string' ? body.message : 'summaries HTTP ' + res.status);
+  }
+  const raw = Array.isArray(body.summaries) ? body.summaries : [];
+  return raw.flatMap((one) => {
+    if (one === null || typeof one !== 'object') return [];
+    const item = one as Record<string, unknown>;
+    if (typeof item.id !== 'string' || typeof item.text !== 'string' || item.text === '') return [];
+    return [
+      {
+        id: item.id,
+        periodStart: typeof item.periodStart === 'number' ? item.periodStart : 0,
+        periodEnd: typeof item.periodEnd === 'number' ? item.periodEnd : 0,
+        text: item.text,
+      },
+    ];
+  });
+}
+
 /**
  * 列出某只宠物的长期事实。
  *

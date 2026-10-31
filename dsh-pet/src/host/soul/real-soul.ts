@@ -29,12 +29,15 @@ import {
   SqliteEventStore,
   SqliteFactStore,
   SqliteJobStore,
+  SqliteSummaryStore,
   SqliteTurnStore,
   TurnHistory,
   type EventStore,
   type ExtractionScheduler,
   type ModelGateway,
   type Persona,
+  type Summary,
+  type MemoryHit,
   type RecalledMemory,
   type Soul,
   type TurnStore,
@@ -79,6 +82,8 @@ export type RealSoul = ChatMemory & {
   readonly listFacts: PetRouteDeps['listFacts'];
   /** 把事实标记为「不对」（纠正，不是删除）。 */
   readonly correctFacts: PetRouteDeps['correctFacts'];
+  /** 列出对话摘要（只读）；存储不可用时为 `undefined`。 */
+  readonly listSummaries: PetRouteDeps['listSummaries'];
   /**
    * 后台维护（事实抽取）。只有库可用时才有；宿主用定时器驱动。
    * 与对话主链路完全解耦：维护失败/没开始，都不影响说话。
@@ -94,6 +99,18 @@ function clipText(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   const chars = Array.from(flat);
   return chars.length > max ? chars.slice(0, max).join('') + '…' : flat;
+}
+
+/**
+ * 聊天原文的命中通道。
+ *
+ * `MemoryHit['via']` 还包含 `fact`（长期事实走的是另一条路），但 `/memory` 列的是聊天原文，
+ * 把 `fact` 透出去会让界面标出一个不存在的来源。这里的收窄不是防御性冗余：
+ * 该赋值点在条件表达式里，TypeScript 的上下文推断比看上去松（实测写 `via: 'fact'`
+ * 不报错，写 `id: 999` 才报），所以把契约写在代码里而不是指望编译器。
+ */
+export function channelOf(via: MemoryHit['via']): 'fts' | 'substring' | 'decomposed' | undefined {
+  return via === 'fts' || via === 'substring' || via === 'decomposed' ? via : undefined;
 }
 
 /** 与上游一致：条目级 `chatMemoryRounds`，非法或缺失回落 5。 */
@@ -151,6 +168,7 @@ function openStores(
   events: EventStore | null;
   facts: SqliteFactStore | null;
   jobs: SqliteJobStore | null;
+  summaries: SqliteSummaryStore | null;
   file: string | null;
 } {
   const file = join(userRoot, 'soul.db');
@@ -162,6 +180,8 @@ function openStores(
       // 事实与任务共用同一个句柄：它们和事件在同一个文件里，分连接会互相抢写锁
       facts: new SqliteFactStore({ database: db }),
       jobs: new SqliteJobStore({ database: db }),
+      // 摘要与事件同库同句柄：它和事件在同一个文件里，分连接会在同进程内抢写锁
+      summaries: new SqliteSummaryStore({ database: db }),
       file,
     };
   } catch (error) {
@@ -170,7 +190,7 @@ function openStores(
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return { turns: new TurnHistory(), events: null, facts: null, jobs: null, file: null };
+    return { turns: new TurnHistory(), events: null, facts: null, jobs: null, summaries: null, file: null };
   }
 }
 
@@ -206,6 +226,8 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   let events: EventStore | null = null;
   /** 事实存储：删除单条记忆时要同步切断来源；端点后续也用它。 */
   let factStore: SqliteFactStore | null = null;
+  /** 摘要存储：端点列摘要要用；它和事件/事实共用同一个句柄。 */
+  let summaryStoreRef: SqliteSummaryStore | null = null;
   /** 事实抽取器/节拍器：库可用时启用，失败只影响记忆整理，不影响说话。 */
   let scheduler: ExtractionScheduler | null = null;
 
@@ -267,9 +289,10 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
           },
         };
     // 历史与记忆：落库优先，失败退回内存（见 openStores 的说明）
-    const { turns, events: opened, facts, jobs, file: storeFile } = openStores(userRoot, log);
+    const { turns, events: opened, facts, jobs, summaries: summaryStore, file: storeFile } = openStores(userRoot, log);
     events = opened;
     factStore = facts;
+    summaryStoreRef = summaryStore;
     if (storeFile !== null) log.info(`[dsh-pet][soul] 历史落库：${storeFile}`);
 
     // 记忆能力先在块外算好：条件展开（...?(x):{}）会让 TypeScript 丢掉上下文类型，
@@ -279,7 +302,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
         ? { memory: undefined, recall: undefined }
         : {
             // 长期记忆：每轮落两条事件，删聊天时同步清理由这一轮派生的事实。库不可用时不挂，聊天照常
-            memory: createEventRecorder(opened, log, facts),
+            memory: createEventRecorder(opened, log, facts, summaryStore ?? undefined),
             // 召回：事实（「她知道的」）排在聊天原文之前，两者共享同一份预算。
             // 预算按条目级配置解析（chatMemoryItems / Tokens / ItemTokens / Facts），
             // 缺省 5 条 / 400 token / 单条 120 / 事实 3 条；写坏回落默认并留 warn
@@ -288,6 +311,8 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
                 petId,
                 query,
                 facts: facts.list(petId, { limit: 200 }),
+                // 摘要不按关键词筛（它的价值是「接上上次」），只取最近几段
+                summaries: summaryStore === null ? [] : summaryStore.list(petId, { limit: 5 }),
                 searchEvents: () => opened.search(petId, query),
                 budget: memoryBudgetOf(entryConfigOf(petId), warnConfigOnce),
               }),
@@ -308,7 +333,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       scheduler = createExtractionScheduler({
         events: opened,
         jobs,
-        extractor: createFactExtractor(facts, model, log),
+        extractor: createFactExtractor(facts, model, log, summaryStore ?? undefined),
         pets: () =>
           flattenPetList(readAllConfig(configPaths))
             .map((pet) => String(pet.id ?? ''))
@@ -441,16 +466,19 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
                 source: one.source,
               }));
             }
-            return events.search(petId, query, { candidateLimit: limit }).map((hit) => ({
-              id: hit.event.id,
-              occurredAt: hit.event.occurredAt,
-              role: hit.event.role,
-              text: hit.event.text,
-              kind: hit.event.kind,
-              source: hit.event.source,
+            return events.search(petId, query, { candidateLimit: limit }).map((hit) => {
               // 命中通道：界面上用来解释「为什么想起这一条」
-              via: hit.via,
-            }));
+              const channel = channelOf(hit.via);
+              return {
+                id: hit.event.id,
+                occurredAt: hit.event.occurredAt,
+                role: hit.event.role,
+                text: hit.event.text,
+                kind: hit.event.kind,
+                source: hit.event.source,
+                ...(channel === undefined ? {} : { via: channel }),
+              };
+            });
           },
     deleteMemories:
       events === null
@@ -497,6 +525,20 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
                     }),
               };
             });
+          },
+    // 摘要可见化：只列 active（dirty/retracted 既不参与召回，也不该出现在界面上）
+    listSummaries:
+      summaryStoreRef === null
+        ? undefined
+        : async (petId, limit) => {
+            const store = summaryStoreRef;
+            const rows: Summary[] = store.list(petId, { limit });
+            return rows.map((one) => ({
+              id: one.id,
+              periodStart: one.periodStart,
+              periodEnd: one.periodEnd,
+              text: one.text,
+            }));
           },
     correctFacts:
       factStore === null

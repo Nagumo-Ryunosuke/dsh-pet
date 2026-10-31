@@ -102,6 +102,17 @@ export const PANEL_CSS = `
   border-bottom: none;
 }
 
+/* 摘要行：与记忆条目同样式，但不可删，靠「梗概」二字和可操作条目区分开 */
+.pet-chat-memory-summary {
+  display: flex;
+  align-items: baseline;
+  gap: ${px(SIZE.gapTight)};
+  padding: ${px(4)} 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-s-14);
+}
+
 .pet-chat-memory-from {
   padding: 0 0 ${px(4)} 0;
   color: var(--dsw-alias-label-secondary);

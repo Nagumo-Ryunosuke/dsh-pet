@@ -138,6 +138,26 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
               ],
             }),
           ),
+          // 摘要只读：它是一整段的压缩，没法像事实那样逐条纠正；
+          // 来源被删过一次就整条退出（服务端只返回 active），所以这里不会出现「删了还在」
+          ...(state.summaries.length === 0
+            ? []
+            : [
+                h('div', { key: 'summaries-title', className: 'pet-chat-memory-subtitle', children: '聊过的大概' }),
+                ...state.summaries.map((one) =>
+                  h('div', {
+                    key: one.id,
+                    className: 'pet-chat-memory-summary',
+                    children: [
+                      h('span', {
+                        className: 'pet-chat-memory-when',
+                        children: memoryDay(one.periodEnd) + '・梗概',
+                      }),
+                      h('span', { className: 'pet-chat-memory-text', children: one.text }),
+                    ],
+                  }),
+                ),
+              ]),
           h('div', { key: 'events-title', className: 'pet-chat-memory-subtitle', children: '聊过的' }),
         ];
   const eventRows =

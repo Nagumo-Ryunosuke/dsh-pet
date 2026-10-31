@@ -38,6 +38,7 @@ const INITIAL: PanelData = {
   memoryOpen: false,
   memories: [],
   facts: [],
+  summaries: [],
   memoryQuery: '',
   memoryLoading: false,
   pendingMemoryId: null,
