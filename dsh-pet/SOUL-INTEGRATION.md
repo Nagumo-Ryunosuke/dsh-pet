@@ -39,6 +39,8 @@
 - `src/host/soul/recall.ts`：把长期事实与聊天原文融合进同一份召回预算（事实在前，最多 3 条）。
 - `src/host/soul/budget.ts`：记忆预算的配置解析（`chatMemory*` 四项），越界/类型错误回落默认并 warn（同一条告警每进程只报一次）。
 - `src/host/routes/facts.ts` + `types.ts`：事实条目额外带 `sources`（仍存活的来源条数）与 `from`（最新那句原文，截 48 字）；`/memory?q=` 的条目带 `via`（`fts` / `substring` / `decomposed`，浏览时不带）。
+- `src/host/routes/summaries.ts`：`GET /summaries` 只列 active 摘要（只读，DELETE 回 405）；面板卷帘多一段「聊过的大概」。
+- `src/host/soul/real-soul.ts`：`openStores` 多开一个 `SqliteSummaryStore`（同库同句柄），并把它同时传给记录器（删聊天时转 `dirty`）、抽取器（顺手写梗概）与召回（事实 → 摘要 → 原文）。
 - `src/client/chat/`：发送携带幂等键；「记忆」卷帘里把「她知道的事」（事实，可点「不对」）与「聊过的」（原文，可「忘掉」）分开展示。
 - `tsdown.config.mjs`：`@deepseek-pet/soul`、`zod`、`openai`、`@anthropic-ai/sdk` 改为内联（`noExternal`）——灵魂包不在任何 registry 上，插件按目录拷贝安装，外部引用会断。
 - `package.json` / `pnpm-lock.yaml`：依赖 `@deepseek-pet/soul`（`link:` 指向灵魂仓库，仅开发期）。
@@ -50,4 +52,4 @@
 
 ## 测试
 
-`npm test` 全量 2205 项 0 失败（此前两处偶发已修：`withDeadline` 把截止定时器 `unref` 掉、body 超时与 413 的竞速）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。
+`npm test` 全量 2214 项 0 失败（此前两处偶发已修：`withDeadline` 把截止定时器 `unref` 掉、body 超时与 413 的竞速）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。
