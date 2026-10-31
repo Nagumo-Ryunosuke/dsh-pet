@@ -21,8 +21,10 @@
 
 - `src/host/soul/`（新增目录）：`mode.ts`（模式选择）、`real-soul.ts`（真灵魂适配：人格播种、模型网关、历史与记忆存储、召回、事实抽取的宿主侧）、`fake-soul.ts`（M0 假后端，接线检查用）、`command.ts`（soul/fake 模式下的 `/chat` 拒绝桩）。
 - `src/host/index.ts`：按模式装配聊天后端（核心改动约 20 行）。
-- `src/host/routes/chat.ts` + `routes/types.ts`：`chatWithPet` 增加可选 `requestId`（幂等）与 `chatSupportsImages`（soul 模式在**落盘前**拒绝图片）；新增 `routes/memory.ts`（`GET/DELETE /memory`，记忆可见化）。
-- `src/client/chat/`：发送携带幂等键；新增「记忆」卷帘（检索、忘掉）。
+- `src/host/routes/chat.ts` + `routes/types.ts`：`chatWithPet` 增加可选 `requestId`（幂等）与 `chatSupportsImages`（soul 模式在**落盘前**拒绝图片）；新增 `routes/memory.ts`（`GET/DELETE /memory`，记忆可见化）与 `routes/facts.ts`（`GET/DELETE /facts`，长期事实的列出与「不对」纠正；纠正为 `superseded`，不删原文）。
+- `src/host/plugin/loops.ts`：`registerExtractionMaintenance` 每分钟唤醒一次灵魂侧的抽取节拍器（空闲 10 分钟 / 累计 10 条 / 每日 4 次预算 / 回复在途时跳过都由节拍器判断，宿主只提供时钟）。
+- `src/host/soul/recall.ts`：把长期事实与聊天原文融合进同一份召回预算（事实在前，最多 3 条）。
+- `src/client/chat/`：发送携带幂等键；「记忆」卷帘里把「她知道的事」（事实，可点「不对」）与「聊过的」（原文，可「忘掉」）分开展示。
 - `tsdown.config.mjs`：`@deepseek-pet/soul`、`zod`、`openai`、`@anthropic-ai/sdk` 改为内联（`noExternal`）——灵魂包不在任何 registry 上，插件按目录拷贝安装，外部引用会断。
 - `package.json` / `pnpm-lock.yaml`：依赖 `@deepseek-pet/soul`（`link:` 指向灵魂仓库，仅开发期）。
 
@@ -33,4 +35,4 @@
 
 ## 测试
 
-`npm test` 全量 2178 项 0 失败；`voice/hear.test.ts` 输出的 `cancelledByParent` 行是既有噪音（单独跑同样 `fail 0`）。新增测试集中在 `src/host/routes/memory.test.ts`、`chat-idempotency.test.ts`、`src/client/chat/actions.test.ts`。
+`npm test` 全量 2191 项 0 失败；`voice/hear.test.ts` 输出的 `cancelledByParent` 行是既有噪音（单独跑同样 `fail 0`）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/client/chat/actions.test.ts`。
