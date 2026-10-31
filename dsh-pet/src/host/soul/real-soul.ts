@@ -19,16 +19,20 @@ import { join } from 'node:path';
 
 import {
   createEventRecorder,
+  createExtractionScheduler,
+  createFactExtractor,
   createSoul,
   DEFAULT_PERSONA_YAML,
   defaultPersonaFile,
   openSoulDatabase,
   parsePersona,
   SqliteEventStore,
+  SqliteFactStore,
+  SqliteJobStore,
   SqliteTurnStore,
-  trimToBudget,
   TurnHistory,
   type EventStore,
+  type ExtractionScheduler,
   type ModelGateway,
   type Persona,
   type RecalledMemory,
@@ -44,6 +48,7 @@ import type { ChatMemory } from '../plugin/chat-memory.ts';
 import type { HostContext } from '../plugin/context.ts';
 import type { HostSetup } from '../plugin/setup.ts';
 import type { PetRouteDeps } from '../routes/types.ts';
+import { recallWithFacts } from './recall.ts';
 
 /** 指定人格文件的环境变量（不设则用用户数据目录下的 persona.yaml）。 */
 export const PERSONA_ENV = 'DSH_PET_PERSONA';
@@ -69,6 +74,15 @@ export type RealSoul = ChatMemory & {
   readonly listMemories: PetRouteDeps['listMemories'];
   /** 删除若干条记忆。 */
   readonly deleteMemories: PetRouteDeps['deleteMemories'];
+  /** 列出长期事实（「她知道的事」）；存储不可用时为 `undefined`。 */
+  readonly listFacts: PetRouteDeps['listFacts'];
+  /** 把事实标记为「不对」（纠正，不是删除）。 */
+  readonly correctFacts: PetRouteDeps['correctFacts'];
+  /**
+   * 后台维护（事实抽取）。只有库可用时才有；宿主用定时器驱动。
+   * 与对话主链路完全解耦：维护失败/没开始，都不影响说话。
+   */
+  readonly maintenance?: { tick(now?: number): Promise<void> };
 };
 
 /** 与上游一致：条目级 `chatMemoryRounds`，非法或缺失回落 5。 */
@@ -121,13 +135,22 @@ function readFirst(
 function openStores(
   userRoot: string,
   log: HostSetup['log'],
-): { turns: TurnStore; events: EventStore | null; file: string | null } {
+): {
+  turns: TurnStore;
+  events: EventStore | null;
+  facts: SqliteFactStore | null;
+  jobs: SqliteJobStore | null;
+  file: string | null;
+} {
   const file = join(userRoot, 'soul.db');
   try {
     const db = openSoulDatabase({ file });
     return {
       turns: new SqliteTurnStore({ database: db }),
       events: new SqliteEventStore({ database: db }),
+      // 事实与任务共用同一个句柄：它们和事件在同一个文件里，分连接会互相抢写锁
+      facts: new SqliteFactStore({ database: db }),
+      jobs: new SqliteJobStore({ database: db }),
       file,
     };
   } catch (error) {
@@ -136,7 +159,7 @@ function openStores(
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return { turns: new TurnHistory(), events: null, file: null };
+    return { turns: new TurnHistory(), events: null, facts: null, jobs: null, file: null };
   }
 }
 
@@ -170,6 +193,12 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   let personaId: string | undefined;
   // 记忆存储提到函数作用域：端点的列出/删除也要用它，不能困在人格可用的分支里
   let events: EventStore | null = null;
+  /** 事实存储：删除单条记忆时要同步切断来源；端点后续也用它。 */
+  let factStore: SqliteFactStore | null = null;
+  /** 事实抽取器/节拍器：库可用时启用，失败只影响记忆整理，不影响说话。 */
+  let scheduler: ExtractionScheduler | null = null;
+  /** 正在生成回复的轮数：抽取要让路，不与用户等待的那句话抢模型。 */
+  let activeTurns = 0;
   if (loaded.ok) {
     personaId = loaded.persona.personaId;
     const echo = process.env[MODEL_ENV] === 'echo';
@@ -196,26 +225,28 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
           },
         };
     // 历史与记忆：落库优先，失败退回内存（见 openStores 的说明）
-    const { turns, events: opened, file: storeFile } = openStores(userRoot, log);
+    const { turns, events: opened, facts, jobs, file: storeFile } = openStores(userRoot, log);
     events = opened;
+    factStore = facts;
     if (storeFile !== null) log.info(`[dsh-pet][soul] 历史落库：${storeFile}`);
 
     // 记忆能力先在块外算好：条件展开（...?(x):{}）会让 TypeScript 丢掉上下文类型，
     // 回调参数全变隐式 any——与其到处标注，不如把可空性收敛到一个对象上
     const memoryCapabilities =
-      opened === null
+      opened === null || facts === null
         ? { memory: undefined, recall: undefined }
         : {
-            // 长期记忆：每轮落两条事件，删聊天时同步遗忘。库不可用时不挂，聊天照常
-            memory: createEventRecorder(opened, log),
-            // 召回：按当前输入查事件库，按默认预算裁剪（最多 5 条 / 400 token / 单条 120）
+            // 长期记忆：每轮落两条事件，删聊天时同步清理由这一轮派生的事实。库不可用时不挂，聊天照常
+            memory: createEventRecorder(opened, log, facts),
+            // 召回：事实（「她知道的」）排在聊天原文之前，两者共享同一份预算
+            //（最多 5 条 / 400 token / 单条 120）；没有相关事实时只带原文
             recall: (petId: string, query: string): RecalledMemory[] =>
-              trimToBudget(opened.search(petId, query)).map((hit) => ({
-                id: hit.event.id,
-                occurredAt: hit.event.occurredAt,
-                role: hit.event.role,
-                text: hit.event.text,
-              })),
+              recallWithFacts({
+                petId,
+                query,
+                facts: facts.list(petId, { limit: 200 }),
+                searchEvents: () => opened.search(petId, query),
+              }),
           };
 
     soul = createSoul({
@@ -226,6 +257,25 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       ...memoryCapabilities,
       log,
     });
+
+    // 后台事实抽取：库都可用才启用。跑不跑由节拍器决定（空闲 10 分钟 / 累计 10 条），
+    // 这里只组装依赖；真正驱动在宿主侧的维护定时器里
+    if (opened !== null && facts !== null && jobs !== null) {
+      scheduler = createExtractionScheduler({
+        events: opened,
+        jobs,
+        extractor: createFactExtractor(facts, model, log),
+        pets: () =>
+          flattenPetList(readAllConfig(configPaths))
+            .map((pet) => String(pet.id ?? ''))
+            .filter((id) => id !== ''),
+        log,
+        isBusy: () => activeTurns > 0,
+      });
+      log.info('[dsh-pet][soul] 事实抽取已启用：空闲 10 分钟或累计 10 条触发，每天最多 4 次');
+    } else {
+      log.warn('[dsh-pet][soul] 事实抽取未启用（记忆库不可用）：聊天照常，长期事实不会更新');
+    }
     log.info(`[dsh-pet][soul] 人格已加载 id=${personaId} v=${loaded.persona.version}（${loaded.file}）`);
   } else {
     // 停用生成、保留身体其它能力：这是设计里写明的降级方式，不静默换回旧人设
@@ -275,7 +325,13 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       return { ok: false, reason: 'generate-error', message: 'soul 模式暂不支持图片附件' };
     }
     // 顺带把幂等键交给灵魂：重复到达的那一次不会二次生成，也不会在历史里多出一轮
-    const result = await soul.chat(petId, text, requestId === undefined ? undefined : { requestId });
+    activeTurns += 1;
+    let result: Awaited<ReturnType<Soul['chat']>>;
+    try {
+      result = await soul.chat(petId, text, requestId === undefined ? undefined : { requestId });
+    } finally {
+      activeTurns -= 1;
+    }
     if (!result.ok) {
       return {
         ok: false,
@@ -285,6 +341,8 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     }
     // 与上游同一条展示链路：气泡读的是这个叶子，窗口与气泡必然一致
     state.writePet(petId, 'say', { text: result.text, anim: false });
+    // 这一轮事件已经落库，给节拍器一个「累计到 10 条」的即时检查机会；不 await，不拖慢回复
+    scheduler?.notifyTurn(petId);
     return { ok: true, text: result.text };
   };
 
@@ -346,11 +404,48 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
         ? undefined
         : async (petId, ids) => {
             const removed = events.softDelete(petId, ids);
-            log.info(`[dsh-pet][soul] 删除记忆 pet=${petId} removed=${removed}`);
+            // 单条记忆被删时，由它单独支撑的事实也必须退出使用；还有别的来源就继续保留
+            let detached = 0;
+            if (factStore !== null) {
+              const now = Date.now();
+              for (const id of ids) detached += factStore.detachEvent(petId, id, now);
+            }
+            log.info(
+              `[dsh-pet][soul] 删除记忆 pet=${petId} removed=${removed}` +
+                (detached > 0 ? ` 派生事实来源 ${detached} 条` : ''),
+            );
             return removed;
+          },
+    // 事实可见化：面板里看到的就是提示词会用的事实（同一个库、同一条 active 过滤）
+    listFacts:
+      factStore === null
+        ? undefined
+        : async (petId, limit) => {
+            const store = factStore;
+            return store.list(petId, { limit }).map((fact) => ({
+              id: fact.id,
+              subject: fact.subject,
+              predicate: fact.predicate,
+              value: fact.value,
+              confidence: fact.confidence,
+              updatedAt: fact.updatedAt,
+            }));
+          },
+    correctFacts:
+      factStore === null
+        ? undefined
+        : async (petId, ids) => {
+            const store = factStore;
+            const now = Date.now();
+            let corrected = 0;
+            for (const id of ids) if (store.supersede(petId, id, now)) corrected += 1;
+            log.info(`[dsh-pet][soul] 纠正事实 pet=${petId} corrected=${corrected}/${ids.length}`);
+            return corrected;
           },
     orphanHistory: async () => [],
     deleteOrphans: async () => ({ ok: true as const, pets: 0, messages: 0 }),
+    // 后台维护入口：宿主定时器驱动；库不可用时没有这个入口
+    maintenance: scheduler === null ? undefined : { tick: (now?: number) => scheduler!.tick(now) },
     getActivePetId: () => activePetId,
     setActivePetId: (id: string) => {
       activePetId = id;

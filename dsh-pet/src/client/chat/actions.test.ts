@@ -66,8 +66,11 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
 }
 
-/** 桩 fetch：按序回放给定的响应体，并收集每个请求体。 */
-function stubFetch(responses: unknown[]): {
+/** 桩 fetch：按序回放 memory 响应，facts 单独走自己的队列（默认空），互不吃对方的响应。 */
+function stubFetch(
+  responses: unknown[],
+  factsResponses: unknown[] = [],
+): {
   bodies: Record<string, unknown>[];
   urls: string[];
   restore: () => void;
@@ -76,10 +79,20 @@ function stubFetch(responses: unknown[]): {
   const urls: string[] = [];
   const original = globalThis.fetch;
   let index = 0;
+  let factsIndex = 0;
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    urls.push(String(url));
+    const href = String(url);
+    urls.push(href);
     // GET（记忆卷帘）没有请求体：占一个空对象，让 bodies 与 urls 的下标始终对齐
     bodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+    if (href.includes('/facts')) {
+      const payload = factsResponses[Math.min(factsIndex, Math.max(factsResponses.length - 1, 0))] ?? {
+        ok: true,
+        facts: [],
+      };
+      factsIndex += 1;
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }
     const payload = responses[Math.min(index, responses.length - 1)];
     index += 1;
     return new Response(JSON.stringify(payload), { status: 200 });
@@ -178,7 +191,16 @@ describe('发送动作的幂等键', () => {
 describe('记忆卷帘的动作', () => {
   /** 带好记忆相关初始状态的面板。 */
   function memoryPanel(): PanelData {
-    return panel({ petId: 'main', memoryOpen: false, memories: [], memoryQuery: '', memoryLoading: false });
+    return panel({
+      petId: 'main',
+      memoryOpen: false,
+      memories: [],
+      facts: [],
+      memoryQuery: '',
+      memoryLoading: false,
+      pendingMemoryId: null,
+      pendingFactId: null,
+    });
   }
 
   test('展开时取数；再点一下收起不取数', async () => {
@@ -215,11 +237,8 @@ describe('记忆卷帘的动作', () => {
       await settle();
       memory.searchMemories('  豆豆  ');
       await settle();
-      assert.match(
-        captured.urls[captured.urls.length - 1] ?? '',
-        /q=%E8%B1%86%E8%B1%86/,
-        '检索词要透传（trim 后编码）',
-      );
+      const memoryUrl = captured.urls.filter((one) => one.includes('/memory')).pop() ?? '';
+      assert.match(memoryUrl, /q=%E8%B1%86%E8%B1%86/, '检索词要透传（trim 后编码）');
     } finally {
       captured.restore();
     }
@@ -260,11 +279,62 @@ describe('记忆卷帘的动作', () => {
     }
   });
 
+  test('「这条不对」：先弹确认，确认后纠正并按当前检索词重取', async () => {
+    const captured = stubFetch(
+      [
+        { ok: true, events: [] },
+        { ok: true, events: [] },
+      ],
+      [
+        {
+          ok: true,
+          facts: [
+            {
+              id: 'f1',
+              subject: '用户',
+              predicate: '喜欢',
+              value: '手冲咖啡',
+              confidence: 0.8,
+              updatedAt: 1000,
+            },
+          ],
+        },
+        { ok: true, facts: [] },
+      ],
+    );
+    const { ports, box } = makePorts(memoryPanel());
+    const memory = createMemoryActions(ports);
+    try {
+      memory.toggleMemory();
+      await settle();
+      assert.equal(box.state.facts.length, 1);
+
+      memory.correctFact('f1');
+      assert.equal(box.state.pending, 'correct-fact', '先弹确认条');
+      assert.equal(box.state.pendingFactId, 'f1');
+      assert.equal(box.state.facts.length, 1, '确认前不执行');
+
+      memory.correctFactConfirmed('f1');
+      await settle();
+      assert.equal(box.state.facts.length, 0, '以服务端重取的结果为准');
+      assert.equal(box.state.pendingFactId, null, '执行完清掉待办');
+      assert.ok(
+        captured.urls.some((one) => one.includes('/facts') && one.includes('id=f1')),
+        '纠正走 /facts?id=',
+      );
+    } finally {
+      captured.restore();
+    }
+  });
+
   test('慢的旧检索响应不会覆盖新结果', async () => {
     const original = globalThis.fetch;
     const resolvers: ((response: Response) => void)[] = [];
     globalThis.fetch = ((url: string) => {
-      void url;
+      // 事实单独取，且立即返回：这条例只关心 memory 的乱序
+      if (String(url).includes('/facts')) {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, facts: [] }), { status: 200 }));
+      }
       return new Promise<Response>((resolve) => {
         resolvers.push(resolve);
       });

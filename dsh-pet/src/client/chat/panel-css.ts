@@ -10,6 +10,14 @@ import { px, SIZE } from './metrics.ts';
 /** 面板样式（选择器前缀 `pet-chat`，避免与 DSH 或其它插件撞名）。 */
 export const PANEL_CSS = `
 .pet-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: ${px(SIZE.gapWide)};
+  padding: ${px(SIZE.pad)} ${px(SIZE.pad)} ${px(SIZE.padBottom)};
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-s-14);
 }
 
 /* 记忆卷帘：与人设卷帘同一套 0fr→1fr 展开过渡，夹层裁剪、正文层放边框 */
@@ -51,6 +59,13 @@ export const PANEL_CSS = `
   font: var(--dsw-font-s-14);
 }
 
+/* 事实与原文之间的分组标题：不抢视线，但要让用户知道下面换了含义 */
+.pet-chat-memory-subtitle {
+  margin: ${px(SIZE.gapTight)} 0 0;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-s-12);
+}
+
 .pet-chat-memory-when {
   flex: 0 0 auto;
   color: var(--dsw-alias-label-secondary);
@@ -73,15 +88,6 @@ export const PANEL_CSS = `
 
 .pet-chat-memory-del:hover {
   color: var(--dsw-alias-label-primary);
-}
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  gap: ${px(SIZE.gapWide)};
-  padding: ${px(SIZE.pad)} ${px(SIZE.pad)} ${px(SIZE.padBottom)};
-  color: var(--dsw-alias-label-primary);
-  font: var(--dsw-font-s-14);
 }
 
 .pet-chat-tabs {

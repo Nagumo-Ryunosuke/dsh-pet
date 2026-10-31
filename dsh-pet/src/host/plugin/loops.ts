@@ -16,6 +16,9 @@ import type { HostContext } from './context.ts';
 /** 梦话周期的兜底值（秒）：配置里 eventsRefreshSec.sleepTalk 缺失/非法时用它。 */
 const SLEEP_TALK_DEFAULT_SEC = 60;
 
+/** 事实抽取维护的固定拍（毫秒）：节拍器自己判断空闲/条数/预算，这里只负责叫醒它。 */
+const EXTRACTION_PERIOD_MS = 60_000;
+
 /** 轮询循环的输入。 */
 export type LoopsInput = {
   /** 宿主上下文（apply 收到的那一个）。 */
@@ -31,6 +34,45 @@ export type LoopsInput = {
   Pick<BalancePoll, 'refreshBalance'> &
   Pick<HostSetup, 'standaloneAiPolicy'> &
   Pick<BalancePoll, 'whisperPeriodSec'>;
+
+/**
+ * 事实抽取维护拍：每隔一分钟叫醒一次灵魂侧的节拍器。
+ *
+ * 真正该不该跑（空闲 10 分钟 / 累计 10 条 / 每天 4 次 / 主链路忙不忙）全在
+ * `ExtractionScheduler` 里；这里只是宿主侧定时器的来源，卸载时随 effect 停掉。
+ * 抽取失败只写日志，不影响任何用户可见的对话。
+ *
+ * @param deps - 宿主上下文、日志与节拍器的 tick。
+ */
+export function registerExtractionMaintenance(deps: {
+  ctx: HostContext;
+  log: HostSetup['log'];
+  tick: (now?: number) => Promise<void>;
+}): void {
+  const { ctx, log, tick } = deps;
+  ctx.effect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const arm = (): void => {
+      if (disposed) return;
+      timer = setTimeout(() => void run(), EXTRACTION_PERIOD_MS);
+    };
+    async function run(): Promise<void> {
+      try {
+        await tick();
+      } catch (error) {
+        // 节拍器内部已把错误写进日志；这里兜更外的意外，绝不能让定时器停摆
+        log.warn(`[dsh-pet][soul] 事实抽取维护拍失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+      arm();
+    }
+    arm();
+    return () => {
+      disposed = true;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, 'dsh-pet: soul extraction');
+}
 
 /** 注册轮询循环；返回的清理函数由 ctx.effect 收集。 */
 export function registerLoops(deps: LoopsInput): void {

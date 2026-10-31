@@ -9,7 +9,7 @@ import { createHttpRoute, registerHttpRoute } from './plugin/http-route.ts';
 import { registerLifecycle } from './plugin/lifecycle.ts';
 import { registerChatCommand } from './plugin/command-chat.ts';
 import { registerPetCommand } from './plugin/command-pet.ts';
-import { registerLoops } from './plugin/loops.ts';
+import { registerLoops, registerExtractionMaintenance } from './plugin/loops.ts';
 import { registerBalanceCommand } from './plugin/command-balance.ts';
 import { registerSessionWatch } from './plugin/session-watch.ts';
 import { createDesktopHelper } from './plugin/desktop-helper.ts';
@@ -17,7 +17,7 @@ import { createBalancePoll } from './plugin/balance-poll.ts';
 import { createChatMemory } from './plugin/chat-memory.ts';
 import { chatBackendMode } from './soul/mode.ts';
 import { createFakeSoul } from './soul/fake-soul.ts';
-import { createRealSoul } from './soul/real-soul.ts';
+import { createRealSoul, type RealSoul } from './soul/real-soul.ts';
 import { registerSoulChatCommand } from './soul/command.ts';
 import { createSessionNotify } from './plugin/session-notify.ts';
 import { createPetLookup } from './plugin/pet-lookup.ts';
@@ -161,6 +161,15 @@ export function apply(ctx: any): void {
     standaloneAiPolicy,
     whisperPeriodSec,
   });
+
+  // 事实抽取的后台维护：只有 soul 模式且记忆库可用时才有入口。60s 一拍，
+  // 节拍器自己判断空闲/条数/每日预算；native/fake 模式完全不注册定时器
+  if (backendMode === 'soul') {
+    const maintenance = (chatMemory as RealSoul).maintenance;
+    if (maintenance !== undefined) {
+      registerExtractionMaintenance({ ctx, log, tick: maintenance.tick });
+    }
+  }
 
   registerPetCommand({ ctx, effectivePetList, petDisplayName, resolveActivePetId, setActivePetId });
 

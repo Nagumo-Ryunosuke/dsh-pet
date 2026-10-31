@@ -86,14 +86,41 @@ function memoryDay(ts: number): string {
 }
 
 /**
- * 记忆卷帘：她能想起来的东西，按召回的同一条链路列出，可检索、可单条删除。
+ * 记忆卷帘：她「知道的事」（长期事实）和「聊过的内容」（聊天原文）分开列。
  *
- * 与人设卷帘同一形态（在正常流里展开，把列表顶下去）。
+ * 事实是提炼后的知识，可以直接点「不对」纠正；原文是证据，只能忘掉。混在一起会让
+ * 用户分不清「她在坚持一个错误结论」和「她只是引用了一句旧话」。
  */
 export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unknown {
-  const body = state.memoryLoading
-    ? [h('div', { key: 'loading', className: 'pet-chat-hint', children: '加载中…' })]
-    : state.memories.length === 0
+  const factRows =
+    state.facts.length === 0
+      ? []
+      : [
+          h('div', { key: 'facts-title', className: 'pet-chat-memory-subtitle', children: '她知道的事' }),
+          ...state.facts.map((one) =>
+            h('div', {
+              key: one.id,
+              className: 'pet-chat-memory-item',
+              children: [
+                h('span', { className: 'pet-chat-memory-when', children: '事实' }),
+                h('span', {
+                  className: 'pet-chat-memory-text',
+                  children: one.subject + one.predicate + one.value,
+                }),
+                h('button', {
+                  type: 'button',
+                  className: 'pet-chat-memory-del',
+                  'aria-label': '这条事实不对',
+                  onClick: () => state.correctFact(one.id),
+                  children: '不对',
+                }),
+              ],
+            }),
+          ),
+          h('div', { key: 'events-title', className: 'pet-chat-memory-subtitle', children: '聊过的' }),
+        ];
+  const eventRows =
+    state.memories.length === 0
       ? [
           h('div', {
             key: 'empty',
@@ -121,6 +148,9 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
             ],
           }),
         );
+  const body = state.memoryLoading
+    ? [h('div', { key: 'loading', className: 'pet-chat-hint', children: '加载中…' })]
+    : [...factRows, ...eventRows];
   return h('div', {
     id: MEMORY_PANEL_ID,
     className: 'pet-chat-memory-drawer' + (state.memoryOpen ? ' is-open' : ''),
@@ -191,6 +221,7 @@ export function toolsNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unkn
 /** 待确认操作的文案：每条都说清「删什么、不可恢复」。 */
 const CONFIRM_TEXT: Record<ConfirmKind, string> = {
   'forget-memory': '让她忘掉这条记忆？',
+  'correct-fact': '这条不对？',
   'delete-selected': '删除选中的这几轮对话？',
   'clear-all': '清空这只宠物的全部对话历史？',
   'clear-orphans': '清理已删除宠物的残留历史？',
@@ -210,9 +241,17 @@ export function confirmNode(rt: ChatPanelRuntime, state: ChatPanelState): unknow
       : state.pending === 'clear-orphans'
         ? `（${state.orphans.length} 只）`
         : '';
-  // 「忘掉记忆」是软删除（原文留痕、只是她不再提起），措辞与真删除分开，
-  // 不然用户会以为这条记忆从磁盘上消失了
-  const suffix = state.pending === 'forget-memory' ? '之后她不会再提起。' : '删了找不回来。';
+  // 「忘掉记忆」是软删除（原文留痕、只是她不再提起）；「这条不对」是纠正（旧结论关闭、
+  // 留痕可审计）。两者都不是真删除，措辞要分开，别让用户以为数据从磁盘消失了
+  const suffix =
+    state.pending === 'forget-memory'
+      ? '之后她不会再提起。'
+      : state.pending === 'correct-fact'
+        ? '之后她不会再把这条当成事实。'
+        : '删了找不回来。';
+  const title =
+    state.pending === 'forget-memory' ? '删除记忆' : state.pending === 'correct-fact' ? '纠正记忆' : '删除对话历史';
+  const primaryLabel = state.pending === 'correct-fact' ? '不对' : '删除';
   const description = CONFIRM_TEXT[state.pending] + count + suffix;
   // 平台原语缺失（旧宿主）时退化为内联确认条，功能不丢、样式差一点
   if (ui === undefined) {
@@ -226,7 +265,7 @@ export function confirmNode(rt: ChatPanelRuntime, state: ChatPanelState): unknow
           type: 'button',
           className: 'pet-chat-danger',
           onClick: () => state.confirmAsk(),
-          children: '删除',
+          children: primaryLabel,
         }),
         h('button', {
           type: 'button',
@@ -240,7 +279,7 @@ export function confirmNode(rt: ChatPanelRuntime, state: ChatPanelState): unknow
   const { Button, Modal } = ui;
   return h(Modal, {
     open: true,
-    title: '删除对话历史',
+    title,
     closeLabel: '关闭',
     description,
     onClose: () => state.cancelAsk(),
@@ -248,7 +287,7 @@ export function confirmNode(rt: ChatPanelRuntime, state: ChatPanelState): unknow
       className: 'pet-chat-confirm-actions',
       children: [
         h(Button, { variant: 'ghost', type: 'button', onClick: () => state.cancelAsk(), children: '取消' }),
-        h(Button, { variant: 'primary', type: 'button', onClick: () => state.confirmAsk(), children: '删除' }),
+        h(Button, { variant: 'primary', type: 'button', onClick: () => state.confirmAsk(), children: primaryLabel }),
       ],
     }),
   });

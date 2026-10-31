@@ -9,8 +9,10 @@ import { encodeImageFile } from '../../shared/chat/encode.ts';
 import {
   clearHistory,
   clearOrphans as clearOrphansApi,
+  correctFactsById,
   deleteMemoriesById,
   deleteRounds,
+  fetchFacts,
   fetchMemories,
   sendMessage,
   type DeleteResult,
@@ -131,8 +133,8 @@ export interface ShellDeps {
   readonly ports: ActionPorts;
   /** 记忆删除动作（确认后要分发到它们）。 */
   readonly history: { deleteSelected: () => void; clearAll: () => void };
-  /** 「忘掉一条记忆」动作（确认后要分发到它）。 */
-  readonly memory: { forgetConfirmed: (id: string) => void };
+  /** 「忘掉一条记忆」与「这条事实不对」动作（确认后要分发到它们）。 */
+  readonly memory: { forgetConfirmed: (id: string) => void; correctFactConfirmed: (id: string) => void };
   /** 消息列表容器：展开更早的轮时要按高度差补偿滚动。 */
   readonly listRef: { current: HTMLDivElement | null };
   /** 每次「加载更早」放出的轮数。 */
@@ -169,12 +171,14 @@ export function createShellActions(deps: ShellDeps): {
   const confirmAsk = (): void => {
     const kind = ports.read().pending;
     const memoryId = ports.read().pendingMemoryId;
+    const factId = ports.read().pendingFactId;
     // 一起清：先分发再清的话，「忘掉」这边就拿到 null 了
-    ports.patch({ pending: null, pendingMemoryId: null });
+    ports.patch({ pending: null, pendingMemoryId: null, pendingFactId: null });
     if (kind === 'delete-selected') history.deleteSelected();
     else if (kind === 'clear-all') history.clearAll();
     else if (kind === 'clear-orphans') clearOrphans();
     else if (kind === 'forget-memory' && memoryId !== null) memory.forgetConfirmed(memoryId);
+    else if (kind === 'correct-fact' && factId !== null) memory.correctFactConfirmed(factId);
   };
 
   /** 多放一批更早的轮；按高度差补偿滚动位置，视线不跳。 */
@@ -191,18 +195,19 @@ export function createShellActions(deps: ShellDeps): {
   return {
     clearOrphans,
     ask: (kind: ConfirmKind) => ports.patch({ pending: kind }),
-    cancelAsk: () => ports.patch({ pending: null, pendingMemoryId: null }),
+    cancelAsk: () => ports.patch({ pending: null, pendingMemoryId: null, pendingFactId: null }),
     confirmAsk,
     showOlder,
   };
 }
 
 /**
- * 记忆卷帘的动作：展开取数、按词检索、删单条后按当前词重取。
+ * 记忆卷帘的动作：展开取数、按词检索、删单条 / 纠正事实后按当前词重取。
  *
  * 删除是软删除（退出检索、原文留痕），删完重取而不是本地移除——条数以服务端为准。
+ * 事实与聊天原文分开取：前者是「知道」，后者是「说过」。
  * @param ports - 动作端口。
- * @returns 记忆相关的三个动作。
+ * @returns 记忆卷帘的动作。
  */
 export function createMemoryActions(ports: ActionPorts): {
   toggleMemory: () => void;
@@ -210,6 +215,8 @@ export function createMemoryActions(ports: ActionPorts): {
   searchMemories: (query: string) => void;
   deleteMemory: (id: string) => void;
   forgetConfirmed: (id: string) => void;
+  correctFact: (id: string) => void;
+  correctFactConfirmed: (id: string) => void;
 } {
   /**
    * 取数次序号：只有最新一次请求能写状态。
@@ -226,9 +233,13 @@ export function createMemoryActions(ports: ActionPorts): {
     if (data.petId === '') return;
     ports.patch({ memoryLoading: true });
     try {
-      const items = await fetchMemories(data.petId, query);
+      // 事实层单独兜底：旧版后端没有 /facts 时，记忆列表照常可用，只是事实段为空
+      const [items, facts] = await Promise.all([
+        fetchMemories(data.petId, query),
+        fetchFacts(data.petId).catch(() => []),
+      ]);
       if (token !== searchToken) return; // 已被更新的请求取代，丢掉这份结果
-      ports.patch({ memories: items });
+      ports.patch({ memories: items, facts });
     } catch (error) {
       if (token !== searchToken) return;
       ports.fail(error);
@@ -267,6 +278,25 @@ export function createMemoryActions(ports: ActionPorts): {
           ports.fail(error);
         } finally {
           ports.patch({ pendingMemoryId: null });
+        }
+      })();
+    },
+    // 纠正一条事实：旧条置 superseded 留痕，她之后不再把它当事实；同样先确认
+    correctFact: (id: string): void => ports.patch({ pending: 'correct-fact', pendingFactId: id }),
+    correctFactConfirmed: (id: string): void => {
+      void (async () => {
+        const data = ports.read();
+        try {
+          const result = await correctFactsById(data.petId, [id]);
+          if (!result.ok) {
+            ports.fail(result.message);
+            return;
+          }
+          await refresh(data.memoryQuery);
+        } catch (error) {
+          ports.fail(error);
+        } finally {
+          ports.patch({ pendingFactId: null });
         }
       })();
     },

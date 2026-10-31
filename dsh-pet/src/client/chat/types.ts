@@ -6,7 +6,7 @@
  */
 import type { EncodedImage } from '../../shared/chat/encode.ts';
 import type { Pet } from '../../shared/types.ts';
-import type { ChatMessageView, ChatRound, MemoryItemView, OrphanHistory } from './api.ts';
+import type { ChatMessageView, ChatRound, FactItemView, MemoryItemView, OrphanHistory } from './api.ts';
 
 /** 面板的全部可渲染字段；一次性替换，避免多个 useState 各提交一半。 */
 export interface PanelData {
@@ -48,18 +48,22 @@ export interface PanelData {
   readonly memoryOpen: boolean;
   /** 卷帘里的记忆条目：不带关键词 = 最新在前，带关键词 = 召回排序。 */
   readonly memories: readonly MemoryItemView[];
+  /** 卷帘里的长期事实（她「确定知道」的事）：与聊天原文分开列出。 */
+  readonly facts: readonly FactItemView[];
   /** 卷帘里的检索词；空串 = 浏览全部。 */
   readonly memoryQuery: string;
   /** 卷帘正在取数。 */
   readonly memoryLoading: boolean;
   /** 待确认「忘掉」的那条记忆 id；null = 没有待确认的。 */
   readonly pendingMemoryId: string | null;
+  /** 待确认「这条不对」的那条事实 id；null = 没有待确认的。 */
+  readonly pendingFactId: string | null;
   /** 正在点播的那一轮与阶段；null = 没有在播。同一时刻只播一条。 */
   readonly speaking: { readonly ts: number; readonly phase: 'loading' | 'playing' | 'failed' } | null;
 }
 
 /** 需要二次确认的破坏性操作：用面板内的确认条，不用浏览器原生 `confirm`。 */
-export type ConfirmKind = 'delete-selected' | 'clear-all' | 'clear-orphans' | 'forget-memory';
+export type ConfirmKind = 'delete-selected' | 'clear-all' | 'clear-orphans' | 'forget-memory' | 'correct-fact';
 
 /** hook 返回：状态、派生值、动作与列表引用。 */
 export interface ChatPanelState extends PanelData {
@@ -91,6 +95,10 @@ export interface ChatPanelState extends PanelData {
   readonly deleteMemory: (id: string) => void;
   /** 确认后真正执行「忘掉」，然后按当前检索词重取。id 由确认分发方从待办里取出传入。 */
   readonly forgetConfirmed: (id: string) => void;
+  /** 请求「这条不对」（弹确认条，不执行）。 */
+  readonly correctFact: (id: string) => void;
+  /** 确认后把事实标记为不对，然后重取。id 由确认分发方传入。 */
+  readonly correctFactConfirmed: (id: string) => void;
   /** 消息列表容器：滚动到底部要用。 */
   readonly listRef: { current: HTMLDivElement | null };
   /** 输入框：内容变高时要直接改它的 height。 */

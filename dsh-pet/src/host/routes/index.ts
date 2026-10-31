@@ -13,6 +13,7 @@ import { handleBalanceRoutes } from './balance.ts';
 import { handleChatRoutes } from './chat.ts';
 import { handleConfigRoutes } from './config/index.ts';
 import { handleDesktopRoutes } from './desktop.ts';
+import { handleFactsRoutes } from './facts.ts';
 import { handleInteractionRoutes } from './interaction.ts';
 import { handleMemoryRoutes } from './memory.ts';
 import { handleMenuRoutes } from './menu.ts';
@@ -36,6 +37,7 @@ const HANDLERS: readonly RouteHandler[] = [
   handlePlaybackRoutes,
   handleSleepRoutes,
   handleChatRoutes,
+  handleFactsRoutes,
   handleMemoryRoutes,
   handleAttachmentRoutes,
   handleTodoRoutes,

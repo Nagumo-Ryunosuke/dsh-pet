@@ -37,9 +37,11 @@ const INITIAL: PanelData = {
   personaOpen: false,
   memoryOpen: false,
   memories: [],
+  facts: [],
   memoryQuery: '',
   memoryLoading: false,
   pendingMemoryId: null,
+  pendingFactId: null,
   speaking: null,
 };
 
@@ -113,8 +115,11 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
           // 换宠 = 换记忆：卷帘收起并清空，展开时会按新宠物重新取
           memoryOpen: false,
           memories: [],
+          facts: [],
           memoryQuery: '',
           memoryLoading: false,
+          pendingMemoryId: null,
+          pendingFactId: null,
         });
         void reload(petId);
       },

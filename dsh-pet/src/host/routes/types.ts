@@ -18,6 +18,10 @@ import type { PoseStore } from '../pose.ts';
 import type { SleepStore } from '../sleep.ts';
 import type { PollStateStore } from '../state.ts';
 import type { VoiceTarget } from '../surface.ts';
+import type { TodoStore } from '../todo/store.ts';
+import type { HearService } from '../voice/hear.ts';
+import type { VoiceService } from '../voice/speak.ts';
+import type { WorkStatusStore } from '../work-status.ts';
 
 /** 一条长期记忆（列表与检索共用的形状）。 */
 export interface MemoryItem {
@@ -34,10 +38,22 @@ export interface MemoryItem {
   /** 来源（`chat` = 用户在宠物聊天里主动说的）。 */
   readonly source: string;
 }
-import type { TodoStore } from '../todo/store.ts';
-import type { HearService } from '../voice/hear.ts';
-import type { VoiceService } from '../voice/speak.ts';
-import type { WorkStatusStore } from '../work-status.ts';
+
+/** 一条长期事实（`GET /facts` 的条目，只取显示与纠错用到的字段）。 */
+export interface FactItem {
+  /** 稳定 id，「这条不对」按它定位。 */
+  readonly id: string;
+  /** 关于谁/什么。 */
+  readonly subject: string;
+  /** 属性名。 */
+  readonly predicate: string;
+  /** 属性值。 */
+  readonly value: string;
+  /** 模型自报的置信度 `[0,1]`，只作展示参考。 */
+  readonly confidence: number;
+  /** 最后更新时间（毫秒）。 */
+  readonly updatedAt: number;
+}
 
 /** 一次路由调用的输入：URL 已解析，`rest` 是去掉前缀并解码后的路径。 */
 export interface RouteInput {
@@ -183,6 +199,19 @@ export interface PetRouteDeps {
   readonly listMemories?: (petId: string, query: string | undefined, limit: number) => Promise<readonly MemoryItem[]>;
   /** 删除若干条记忆（软删除：退出检索，原文留痕）。缺省时端点同样返回「不提供」。 */
   readonly deleteMemories?: (petId: string, ids: readonly string[]) => Promise<number>;
+  /**
+   * 列出某只宠物的 active 事实（她「确定知道」的事）。
+   *
+   * 可选：原生/假后端没有事实层。缺省时 `/facts` 明确回「不提供」，而不是空列表。
+   */
+  readonly listFacts?: (petId: string, limit: number) => Promise<readonly FactItem[]>;
+  /**
+   * 把若干条事实标记为「不对」（置 `superseded` 并关闭有效区间）。
+   *
+   * 这是纠正，不是删除：旧条留痕，供解释「为什么她不再这么认为」。
+   * @returns 实际纠正的条数。
+   */
+  readonly correctFacts?: (petId: string, ids: readonly string[]) => Promise<number>;
   /** 删除该宠物的对话记忆：ts 缺省 = 清空全部，否则只删命中的轮（成对）。 */
   readonly deleteHistory: (
     petId: string,

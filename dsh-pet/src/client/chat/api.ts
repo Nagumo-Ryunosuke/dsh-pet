@@ -401,3 +401,72 @@ export async function deleteMemoriesById(petId: string, ids: readonly string[]):
   if (body?.ok === true) return { ok: true, removed: Number(body.removed ?? 0) };
   return { ok: false, message: typeof body?.message === 'string' ? body.message : 'HTTP ' + res.status };
 }
+
+/** 一条长期事实（「她知道的事」）的展示形状。 */
+export interface FactItemView {
+  /** 稳定 id，纠正按它定位。 */
+  readonly id: string;
+  readonly subject: string;
+  readonly predicate: string;
+  readonly value: string;
+  readonly confidence: number;
+  readonly updatedAt: number;
+}
+
+/**
+ * 列出某只宠物的长期事实。
+ *
+ * 事实与「聊过的记忆」分开取：前者是提炼后的「知道」，后者是原文。两者可能都为空，
+ * 但含义不同——界面上也要分开说，不能合成一个列表。
+ *
+ * @param petId - 宠物 id。
+ * @returns 事实条目；后端不提供或响应非法时回空数组。
+ * @throws 网络中断时。
+ */
+export async function fetchFacts(petId: string): Promise<FactItemView[]> {
+  const res = await fetch(ROUTE_PATH + '/facts?pet=' + encodeURIComponent(petId), { cache: 'no-store' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body === null || typeof body !== 'object') throw new Error('facts HTTP ' + res.status);
+  if (body.ok !== true) {
+    throw new Error(typeof body.message === 'string' ? body.message : 'facts HTTP ' + res.status);
+  }
+  const raw = Array.isArray(body.facts) ? body.facts : [];
+  return raw.flatMap((one) => {
+    if (one === null || typeof one !== 'object') return [];
+    const item = one as Record<string, unknown>;
+    if (typeof item.id !== 'string' || typeof item.value !== 'string') return [];
+    return [
+      {
+        id: item.id,
+        subject: typeof item.subject === 'string' ? item.subject : '用户',
+        predicate: typeof item.predicate === 'string' ? item.predicate : '',
+        value: item.value,
+        confidence: typeof item.confidence === 'number' ? item.confidence : 0,
+        updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : 0,
+      },
+    ];
+  });
+}
+
+/** 纠正结果：成功带条数，失败带可展示原因。 */
+export type CorrectResult =
+  { readonly ok: true; readonly corrected: number } | { readonly ok: false; readonly message: string };
+
+/**
+ * 把若干条事实标记为「不对」。
+ *
+ * 纠正不是删除：旧条置 superseded 留痕；冲突并存的两条各点各的，另一条继续有效。
+ *
+ * @param petId - 宠物 id。
+ * @param ids - 要纠正的事实 id。
+ * @returns 实际纠正条数或失败文案。
+ * @throws 网络中断时。
+ */
+export async function correctFactsById(petId: string, ids: readonly string[]): Promise<CorrectResult> {
+  if (ids.length === 0) return { ok: true, corrected: 0 };
+  const query = ids.map((value) => '&id=' + encodeURIComponent(value)).join('');
+  const res = await fetch(ROUTE_PATH + '/facts?pet=' + encodeURIComponent(petId) + query, { method: 'DELETE' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body?.ok === true) return { ok: true, corrected: Number(body.corrected ?? 0) };
+  return { ok: false, message: typeof body?.message === 'string' ? body.message : 'HTTP ' + res.status };
+}
