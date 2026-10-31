@@ -5,7 +5,9 @@
  * 1. 一轮问答写进进程内 Map，由 `GET /chat` 读出（**不写 memory.json**，不碰用户原历史）；
  * 2. 用与上游同一条写叶链路更新气泡（`state.writePet(petId, 'say', …)`），保证「窗口显示」
  *    与「气泡显示」是同一份文本；
- * 3. 主动发言（碎碎念 / 梦话）一律返回失败，绝不落到上游模型。
+ * 3. 主动发言（碎碎念 / 梦话）一律返回失败，绝不落到上游模型；
+ * 4. 故障注入（`!fail` 前缀）只在 `DSH_PET_M0_FAULT=1` 时开启——正常使用时那个前缀只是普通文字，
+ *    不会被识别成指令。
  *
  * 返回类型显式声明为 `ChatMemory`：接口一旦与上游漂移，typecheck 会直接失败，不会静默错位。
  * 真实灵魂（M1）替换本文件即可，装配处不需要再改。
@@ -19,9 +21,17 @@ import type { ChatMemoryMessage } from '../chat.ts';
 import type { PetImageRef } from '../image-attachment.ts';
 
 /** 假后端的输入：只用跑配置解析、写气泡和日志这三件事。 */
-export type FakeSoulInput = Pick<HostSetup, 'configPaths' | 'log' | 'state'>;
+export type FakeSoulInput = Pick<HostSetup, 'configPaths' | 'log' | 'state'> & {
+  /** 是否允许故障注入；缺省按 `DSH_PET_M0_FAULT=1` 判断（测试里直接传，不改进程环境）。 */
+  faultInjection?: boolean;
+  /** 取当前时刻；缺省 `Date.now`。可注入才能真正验证「同毫秒不撞轮」（与 LockStore 同约定）。 */
+  now?: () => number;
+};
 
-/** 触发一次模拟失败的输入前缀（M0 验收「失败时保留输入并提示错误」用）。 */
+/** 打开故障注入的环境变量：默认关闭，避免普通用户打出这个前缀就收到一条假错误。 */
+export const FAULT_ENV = 'DSH_PET_M0_FAULT';
+
+/** 触发一次模拟失败的输入前缀（仅在故障注入开启时生效，M0 验收「失败时保留输入并提示错误」用）。 */
 export const FAIL_PREFIX = '!fail';
 
 /** 一轮问答的两种结果，与上游 ChatMemory.chatWithPet 完全同形。 */
@@ -33,6 +43,8 @@ type FakeReply =
 export type FakeSoul = ChatMemory & {
   /** 已受理的对话轮数（含失败，用来证明「每次输入只打一次后端」）。 */
   callCount: () => number;
+  /** 被拒绝的主动发言次数（碎碎念 + 梦话），用来证明循环确实撞上了桩。 */
+  proactiveRefusals: () => number;
   /** 固定标识，便于日志与测试区分后端。 */
   readonly backend: 'soul-fake';
 };
@@ -51,11 +63,32 @@ function roundsOf(conf: Record<string, unknown>): number {
  */
 export function createFakeSoul(deps: FakeSoulInput): FakeSoul {
   const { configPaths, log, state } = deps;
+  /** 故障注入开关：显式传值优先，否则看环境变量。默认关闭。 */
+  const faults = deps.faultInjection ?? process.env[FAULT_ENV] === '1';
+  /** 取当前时刻（可注入：同毫秒撞轮的单测不用真的等时钟）。 */
+  const now = deps.now ?? Date.now;
   /** 隔离的进程内历史：petId → 消息数组。绝不落到 memory.json。 */
   const messagesByPet = new Map<string, ChatMemoryMessage[]>();
   /** 当前活跃宠物（与上游相同的语义：/pet 选择、命令与余额共用）。 */
   let activePetId = '';
   let calls = 0;
+  /** 上一次分配的轮次时间戳：用来把同一毫秒内的两轮错开，见 chatWithPet 里的说明。 */
+  let lastTs = 0;
+  /** 主动发言被拒的次数（只用于日志收敛：不刷屏，但能看出循环仍在跑）。 */
+  let proactiveRefusals = 0;
+
+  /**
+   * 记一次主动发言拒绝。
+   *
+   * 调度循环约每 5 分钟一拍、一天近 300 次；每次都打一行 warn 会把日志淹掉，也会让人误以为
+   * 出了故障。只打第一次，其余静默计数——「被拦下多少次」对验收有用，逐条时间戳没有。
+   */
+  const noteProactiveRefusal = (kind: string, petId: string): void => {
+    proactiveRefusals += 1;
+    if (proactiveRefusals === 1) {
+      log.warn(`[dsh-pet][soul] 拒绝${kind} pet=${petId}（soul 模式未实现主动发言，后续同类不再逐条记录）`);
+    }
+  };
 
   /** 定位宠物所属条目（素材根）：上游用 `mem[entry][petId]` 取历史，这里必须同构。 */
   const entryOf = (petId: string): string | undefined => {
@@ -101,7 +134,8 @@ export function createFakeSoul(deps: FakeSoulInput): FakeSoul {
       return { ok: false, reason: 'generate-error', message: 'soul 模式（M0）暂不支持图片附件' };
     }
     // 失败路径：不写历史、不写气泡，让 UI 走它自己的错误分支（输入保留）。
-    if (text.startsWith(FAIL_PREFIX)) {
+    // 只在故障注入开启时生效，否则用户正常打出这个前缀会莫名收到一条假错误。
+    if (faults && text.startsWith(FAIL_PREFIX)) {
       log.warn(`[dsh-pet][soul] 模拟失败 pet=${petId} 第 ${calls} 次调用，len=${text.length}`);
       return { ok: false, reason: 'generate-error', message: '假后端按测试指令返回失败（M0）' };
     }
@@ -110,7 +144,11 @@ export function createFakeSoul(deps: FakeSoulInput): FakeSoul {
     const round = Math.floor(list.length / 2) + 1;
     // 固定回复：不含输入正文，避免看起来像模型生成，也避免把用户原话写进日志。
     const reply = `（假灵魂）第 ${round} 轮收到，M0 假后端不生成内容。`;
-    const ts = Date.now();
+    // 轮次时间戳必须严格递增：上游 UI 按 ts 分轮、按 ts 成对删，而 Windows 上连续两次
+    // Date.now() 返回同一毫秒的概率接近 100%。撞 ts 会让两轮在界面上并成一轮，删除时
+    // 一次删掉两轮。这里强制单调，代价只是相邻两轮可能差 1ms。
+    const ts = Math.max(now(), lastTs + 1);
+    lastTs = ts;
     list.push({ role: 'user', content: text, ts });
     list.push({ role: 'assistant', content: reply, ts });
     messagesByPet.set(petId, list);
@@ -145,19 +183,20 @@ export function createFakeSoul(deps: FakeSoulInput): FakeSoul {
 
   /** 主动碎碎念：soul 模式不提供，返回失败让调用方显式看到，不落到上游模型。 */
   const publishWhisper = async (petId: string): Promise<{ ok: false; reason: 'generate-error'; message: string }> => {
-    log.warn(`[dsh-pet][soul] 拒绝碎碎念 pet=${petId}（soul 模式未实现主动发言）`);
+    noteProactiveRefusal('碎碎念', petId);
     return { ok: false, reason: 'generate-error', message: 'soul 模式（M0）不提供碎碎念' };
   };
 
   /** 梦话：同上，永远不生成。 */
   const publishSleepTalk = async (petId: string): Promise<boolean> => {
-    log.warn(`[dsh-pet][soul] 拒绝梦话 pet=${petId}（soul 模式未实现主动发言）`);
+    noteProactiveRefusal('梦话', petId);
     return false;
   };
 
   return {
     backend: 'soul-fake' as const,
     callCount: () => calls,
+    proactiveRefusals: () => proactiveRefusals,
     lastWhisperAt: new Map<string, number>(),
     memoryPath,
     readMemory,
