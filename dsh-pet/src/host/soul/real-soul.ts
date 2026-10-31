@@ -22,9 +22,12 @@ import {
   DEFAULT_PERSONA_YAML,
   defaultPersonaFile,
   parsePersona,
+  SqliteTurnStore,
+  TurnHistory,
   type ModelGateway,
   type Persona,
   type Soul,
+  type TurnStore,
 } from '@deepseek-pet/soul';
 
 import { generateChat } from '../chat.ts';
@@ -92,6 +95,28 @@ function readFirst(
 }
 
 /**
+ * 打开历史存储：优先落库，装不上才退回内存。
+ *
+ * 这里**允许降级**但必须说得出来：数据库不可用时宠物照样能说话，只是重启会丢历史——
+ * 对一个每天在用的桌面伙伴，这比「因为 SQLite 不可用就完全不回复」体验好得多。
+ * 代价是必须留一行 error，让人知道当前不是持久化状态。
+ */
+function openTurnStore(userRoot: string, log: HostSetup['log']): { store: TurnStore; file: string | null } {
+  const file = join(userRoot, 'soul.db');
+  try {
+    const store = new SqliteTurnStore({ file });
+    return { store, file };
+  } catch (error) {
+    log.error(
+      `[dsh-pet][soul] 历史落库不可用，本次运行的历史只在内存里（重启丢失）：${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return { store: new TurnHistory(), file: null };
+  }
+}
+
+/**
  * 创建真灵魂后端。
  *
  * @param deps - 配置路径、日志、状态写入器与宿主上下文（用于调模型）。
@@ -142,9 +167,15 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
             return { text: result.text };
           },
         };
+    // 历史存储：落库优先，失败退回内存（见 openTurnStore 的说明）
+    const { store, file: storeFile } = openTurnStore(userRoot, log);
+    if (storeFile !== null) log.info(`[dsh-pet][soul] 历史落库：${storeFile}`);
+
     soul = createSoul({
       persona: loaded.persona,
       model,
+      // 历史落库（`<userRoot>/soul.db`）：重启后还能接上，这是 M1 第二阶段的目标
+      history: store,
       log,
     });
     log.info(`[dsh-pet][soul] 人格已加载 id=${personaId} v=${loaded.persona.version}（${loaded.file}）`);
