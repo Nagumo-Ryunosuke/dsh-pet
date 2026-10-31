@@ -37,6 +37,8 @@
 - `src/host/routes/chat.ts` + `routes/types.ts`：`chatWithPet` 增加可选 `requestId`（幂等）与 `chatSupportsImages`（soul 模式在**落盘前**拒绝图片）；新增 `routes/memory.ts`（`GET/DELETE /memory`，记忆可见化）与 `routes/facts.ts`（`GET/DELETE /facts`，长期事实的列出与「不对」纠正；纠正为 `superseded`，不删原文）。
 - `src/host/plugin/loops.ts`：`registerExtractionMaintenance` 每分钟唤醒一次灵魂侧的抽取节拍器（空闲 10 分钟 / 累计 10 条 / 每日 4 次预算 / 回复在途时跳过都由节拍器判断，宿主只提供时钟）。
 - `src/host/soul/recall.ts`：把长期事实与聊天原文融合进同一份召回预算（事实在前，最多 3 条）。
+- `src/host/soul/budget.ts`：记忆预算的配置解析（`chatMemory*` 四项），越界/类型错误回落默认并 warn（同一条告警每进程只报一次）。
+- `src/host/routes/facts.ts` + `types.ts`：事实条目额外带 `sources`（仍存活的来源条数）与 `from`（最新那句原文，截 48 字）；`/memory?q=` 的条目带 `via`（`fts` / `substring` / `decomposed`，浏览时不带）。
 - `src/client/chat/`：发送携带幂等键；「记忆」卷帘里把「她知道的事」（事实，可点「不对」）与「聊过的」（原文，可「忘掉」）分开展示。
 - `tsdown.config.mjs`：`@deepseek-pet/soul`、`zod`、`openai`、`@anthropic-ai/sdk` 改为内联（`noExternal`）——灵魂包不在任何 registry 上，插件按目录拷贝安装，外部引用会断。
 - `package.json` / `pnpm-lock.yaml`：依赖 `@deepseek-pet/soul`（`link:` 指向灵魂仓库，仅开发期）。
@@ -48,4 +50,4 @@
 
 ## 测试
 
-`npm test` 全量 2200 项 0 失败（此前两处偶发已修：`withDeadline` 把截止定时器 `unref` 掉、body 超时与 413 的竞速）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。
+`npm test` 全量 2205 项 0 失败（此前两处偶发已修：`withDeadline` 把截止定时器 `unref` 掉、body 超时与 413 的竞速）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。
