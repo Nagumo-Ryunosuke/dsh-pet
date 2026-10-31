@@ -13,6 +13,8 @@ import {
   clearHistory,
   deleteRounds,
   fetchChatConfig,
+  fetchFacts,
+  fetchMemories,
   groupRounds,
   memeUrl,
   memoryBoundaryIndex,
@@ -319,5 +321,87 @@ describe('personaText —— 面板显示哪一份人设', () => {
   test('非字符串的脏值 → 按没写处理，不把对象显示给用户', () => {
     assert.equal(personaText({ text: '对象' }, '条目人设'), '条目人设');
     assert.equal(personaText(undefined, 42), '');
+  });
+});
+
+describe('记忆与事实的数据形状', () => {
+  /** 装一个只回一次 JSON 的 fetch 桩。 */
+  function stubOnce(payload: unknown): { restore: () => void; urls: string[] } {
+    const urls: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }) as typeof fetch;
+    return {
+      urls,
+      restore: () => {
+        globalThis.fetch = original;
+      },
+    };
+  }
+
+  test('事实带上「来自几条聊天 + 最新那句」', async () => {
+    const stub = stubOnce({
+      ok: true,
+      facts: [
+        {
+          id: 'f1',
+          subject: '用户',
+          predicate: '过敏',
+          value: '花生',
+          confidence: 0.9,
+          updatedAt: 1000,
+          sources: 2,
+          from: { text: '我对花生过敏', occurredAt: 900 },
+        },
+      ],
+    });
+    try {
+      const [fact] = await fetchFacts('main');
+      assert.equal(fact?.sources, 2);
+      assert.equal(fact?.from?.text, '我对花生过敏');
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test('来源字段缺失或形状不对 → 少一行展示，而不是显示 undefined', async () => {
+    const stub = stubOnce({
+      ok: true,
+      // 旧版后端没有 sources/from；第三条 from 是坏数据
+      facts: [
+        { id: 'f1', subject: '用户', predicate: '喜欢', value: '茶', confidence: 0.8, updatedAt: 1 },
+        { id: 'f2', subject: '用户', predicate: '养', value: '猫', confidence: 0.8, updatedAt: 1, from: { text: '' } },
+      ],
+    });
+    try {
+      const facts = await fetchFacts('main');
+      assert.equal(facts.length, 2);
+      assert.equal(facts[0]?.sources, 0, '缺字段按 0 条处理');
+      assert.equal(facts[0]?.from, undefined);
+      assert.equal(facts[1]?.from, undefined, '空正文的 from 当作没有');
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test('检索结果带命中通道；浏览与坏通道都不带', async () => {
+    const stub = stubOnce({
+      ok: true,
+      events: [
+        { id: 'e1', occurredAt: 1, role: 'user', text: '豆豆', via: 'fts' },
+        { id: 'e2', occurredAt: 2, role: 'user', text: '豆豆', via: 'unknown-channel' },
+        { id: 'e3', occurredAt: 3, role: 'user', text: '豆豆' },
+      ],
+    });
+    try {
+      const items = await fetchMemories('main', '豆豆');
+      assert.equal(items[0]?.via, 'fts');
+      assert.equal(items[1]?.via, undefined, '不认识的通道不能透传到界面');
+      assert.equal(items[2]?.via, undefined);
+    } finally {
+      stub.restore();
+    }
   });
 });

@@ -50,7 +50,23 @@ describe('记忆预算配置', () => {
   });
 
   test('小数与空字符串按写错处理', () => {
-    assert.equal(memoryBudgetOf({ chatMemoryItems: 2.5 }).maxItems, 5);
-    assert.equal(memoryBudgetOf({ chatMemoryItems: '' }).maxItems, 5);
+    const warnings: string[] = [];
+    assert.equal(memoryBudgetOf({ chatMemoryItems: 2.5 }, (m) => warnings.push(m)).maxItems, 5);
+    assert.equal(memoryBudgetOf({ chatMemoryItems: '' }, (m) => warnings.push(m)).maxItems, 5);
+    assert.equal(warnings.length, 2, '两者都要留下原因，而不是静默取默认');
+  });
+
+  test('写错类型也按写错处理：布尔与数组不能被宽松转换成数字', () => {
+    const warnings: string[] = [];
+    const budget = memoryBudgetOf(
+      // Number(true) === 1、Number([5]) === 5、Number({}) === NaN：前两个会被静默当合法值，
+      // 用户看到的是「我明明写了 5 条，怎么像是没生效」
+      { chatMemoryItems: true, chatMemoryTokens: [900], chatMemoryFacts: {} },
+      (m) => warnings.push(m),
+    );
+    assert.equal(budget.maxItems, 5);
+    assert.equal(budget.maxTokens, 400);
+    assert.equal(budget.maxFacts, 3);
+    assert.equal(warnings.length, 3);
   });
 });

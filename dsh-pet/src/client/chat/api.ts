@@ -348,6 +348,8 @@ export interface MemoryItemView {
   readonly role: string;
   /** 正文。 */
   readonly text: string;
+  /** 命中通道（只有检索时才有）：界面上解释「为什么想起这一条」。 */
+  readonly via?: 'fts' | 'substring' | 'decomposed';
 }
 
 /**
@@ -374,12 +376,14 @@ export async function fetchMemories(petId: string, query?: string): Promise<Memo
     if (one === null || typeof one !== 'object') return [];
     const item = one as Record<string, unknown>;
     if (typeof item.id !== 'string' || typeof item.text !== 'string') return [];
+    const via = item.via;
     return [
       {
         id: item.id,
         occurredAt: typeof item.occurredAt === 'number' ? item.occurredAt : 0,
         role: typeof item.role === 'string' ? item.role : 'user',
         text: item.text,
+        ...(via === 'fts' || via === 'substring' || via === 'decomposed' ? { via } : {}),
       },
     ];
   });
@@ -411,6 +415,10 @@ export interface FactItemView {
   readonly value: string;
   readonly confidence: number;
   readonly updatedAt: number;
+  /** 还活着的来源条数；0 = 证据已经全被删掉（理论上应已撤回）。 */
+  readonly sources: number;
+  /** 最新一处来源的摘录：回答「你从哪知道的」。 */
+  readonly from?: { readonly text: string; readonly occurredAt: number };
 }
 
 /**
@@ -423,6 +431,14 @@ export interface FactItemView {
  * @returns 事实条目；后端不提供或响应非法时回空数组。
  * @throws 网络中断时。
  */
+/** 解析 `from` 字段：形状不对就当没有，界面少一行而不是显示「undefined」。 */
+function parseFrom(raw: unknown): { text: string; occurredAt: number } | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const item = raw as Record<string, unknown>;
+  if (typeof item.text !== 'string' || item.text === '') return undefined;
+  return { text: item.text, occurredAt: typeof item.occurredAt === 'number' ? item.occurredAt : 0 };
+}
+
 export async function fetchFacts(petId: string): Promise<FactItemView[]> {
   const res = await fetch(ROUTE_PATH + '/facts?pet=' + encodeURIComponent(petId), { cache: 'no-store' });
   const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
@@ -435,6 +451,7 @@ export async function fetchFacts(petId: string): Promise<FactItemView[]> {
     if (one === null || typeof one !== 'object') return [];
     const item = one as Record<string, unknown>;
     if (typeof item.id !== 'string' || typeof item.value !== 'string') return [];
+    const from = parseFrom(item.from);
     return [
       {
         id: item.id,
@@ -443,6 +460,8 @@ export async function fetchFacts(petId: string): Promise<FactItemView[]> {
         value: item.value,
         confidence: typeof item.confidence === 'number' ? item.confidence : 0,
         updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : 0,
+        sources: typeof item.sources === 'number' ? item.sources : 0,
+        ...(from === undefined ? {} : { from }),
       },
     ];
   });

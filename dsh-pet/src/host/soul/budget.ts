@@ -49,6 +49,9 @@ const LABELS: Record<keyof typeof RANGES, string> = {
 /**
  * 读一个整数配置项。
  *
+ * 类型先卡死再看数值：`Number(true)` 是 1、`Number([5])` 是 5，宽松转换会把写错类型的
+ * 配置静默当成合法值——用户看到的是「我明明写了，怎么像是没生效」，比直接报错难查得多。
+ *
  * @param conf - 条目级配置。
  * @param key - 键名。
  * @param warn - 留痕口子；缺省静默（测试里不关心日志）。
@@ -58,14 +61,15 @@ function readInt(conf: Record<string, unknown>, key: keyof typeof RANGES, warn?:
   const raw = conf[key];
   const { min, max, fallback } = RANGES[key];
   if (raw === undefined || raw === null) return fallback;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < min || value > max) {
+  const numeric =
+    typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
+  if (!Number.isFinite(numeric) || !Number.isInteger(numeric) || numeric < min || numeric > max) {
     warn?.(
       `[dsh-pet][soul] 配置 ${key}=${JSON.stringify(raw)} 不可用（应为 ${min}–${max} 的整数），按 ${fallback} 处理`,
     );
     return fallback;
   }
-  return value;
+  return numeric;
 }
 
 /**

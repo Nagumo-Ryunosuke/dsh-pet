@@ -27,6 +27,8 @@ function makeDeps(overrides: Partial<PetRouteDeps> = {}): {
     value: '手冲咖啡',
     confidence: 0.8,
     updatedAt: 1000,
+    sources: 2,
+    from: { text: '我对花生过敏', occurredAt: 900 },
   };
   const deps = {
     configPaths: {},
@@ -74,6 +76,14 @@ describe('GET /facts', () => {
     const res = payload(await handleFactsRoutes(deps, call('GET')));
     assert.equal(res.ok, false);
     assert.match(String(res.message), /不提供/);
+  });
+
+  test('应答把「来自几条聊天 + 最新那句」原样带出去', async () => {
+    const { deps } = makeDeps();
+    const res = payload(await handleFactsRoutes(deps, call('GET')));
+    const facts = res.facts as Record<string, unknown>[];
+    assert.equal(facts[0]?.sources, 2, '路由不该吞掉来源条数');
+    assert.deepEqual(facts[0]?.from, { text: '我对花生过敏', occurredAt: 900 });
   });
 
   test('默认 100 条，limit 透传；非法 limit 拒绝且不取数', async () => {

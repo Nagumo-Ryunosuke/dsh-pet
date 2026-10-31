@@ -90,6 +90,25 @@ export const PANEL_CSS = `
   color: var(--dsw-alias-label-primary);
 }
 
+/* 事实条目：主行 + 一行「来自哪句话」。分隔线画在整块下沿，来源行跟着自己的事实走 */
+.pet-chat-memory-fact {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+/* 主行不再自己画线，否则分隔线会切在事实和它的来源之间 */
+.pet-chat-memory-fact > .pet-chat-memory-item {
+  border-bottom: none;
+}
+
+.pet-chat-memory-from {
+  padding: 0 0 ${px(4)} 0;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-s-12);
+  overflow-wrap: anywhere;
+}
+
 .pet-chat-tabs {
   display: flex;
   flex-wrap: wrap;

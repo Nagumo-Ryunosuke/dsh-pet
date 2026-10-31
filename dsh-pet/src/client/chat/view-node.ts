@@ -70,6 +70,13 @@ export function personaNode(h: ChatPanelRuntime['h'], state: ChatPanelState): un
   });
 }
 
+/** 命中通道的界面文案：用户看不懂 fts / substring，说的是「她怎么想起来的」。 */
+const VIA_TEXT: Record<'fts' | 'substring' | 'decomposed', string> = {
+  fts: '原文命中',
+  substring: '短词回退',
+  decomposed: '拆词匹配',
+};
+
 /**
  * 一条记忆显示的时刻：`10-31`，年份几乎不会变，省宽度。
  *
@@ -100,20 +107,34 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
           ...state.facts.map((one) =>
             h('div', {
               key: one.id,
-              className: 'pet-chat-memory-item',
+              className: 'pet-chat-memory-fact',
               children: [
-                h('span', { className: 'pet-chat-memory-when', children: '事实' }),
-                h('span', {
-                  className: 'pet-chat-memory-text',
-                  children: one.subject + one.predicate + one.value,
+                h('div', {
+                  className: 'pet-chat-memory-item',
+                  children: [
+                    h('span', { className: 'pet-chat-memory-when', children: '事实' }),
+                    h('span', {
+                      className: 'pet-chat-memory-text',
+                      children: one.subject + one.predicate + one.value,
+                    }),
+                    h('button', {
+                      type: 'button',
+                      className: 'pet-chat-memory-del',
+                      'aria-label': '这条事实不对',
+                      onClick: () => state.correctFact(one.id),
+                      children: '不对',
+                    }),
+                  ],
                 }),
-                h('button', {
-                  type: 'button',
-                  className: 'pet-chat-memory-del',
-                  'aria-label': '这条事实不对',
-                  onClick: () => state.correctFact(one.id),
-                  children: '不对',
-                }),
+                // 「她怎么知道这个」的直接答案：来自几句话、最新那句是什么
+                ...(one.from === undefined
+                  ? []
+                  : [
+                      h('div', {
+                        className: 'pet-chat-memory-from',
+                        children: `来自 ${one.sources} 条聊天：「${one.from.text}」`,
+                      }),
+                    ]),
               ],
             }),
           ),
@@ -135,7 +156,13 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
             children: [
               h('span', {
                 className: 'pet-chat-memory-when',
-                children: memoryDay(one.occurredAt) + '・' + (one.role === 'user' ? '你说过' : '她说过'),
+                children:
+                  memoryDay(one.occurredAt) +
+                  '・' +
+                  (one.role === 'user' ? '你说过' : '她说过') +
+                  // 检索时补一句「怎么匹配上的」：拆词命中的可信度低于整句命中，
+                  // 用户看到「拆词匹配」就不会奇怪她为什么答得含糊
+                  (one.via === undefined ? '' : '・' + VIA_TEXT[one.via]),
               }),
               h('span', { className: 'pet-chat-memory-text', children: one.text }),
               h('button', {

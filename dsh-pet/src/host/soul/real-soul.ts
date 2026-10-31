@@ -86,6 +86,16 @@ export type RealSoul = ChatMemory & {
   readonly maintenance?: { tick(now?: number): Promise<void> };
 };
 
+/** 事实来源摘录的长度上限：面板上一行，长了会把条目挤散。 */
+export const FACT_SOURCE_CHARS = 48;
+
+/** 按字符截断并补省略号（单行显示用）。 */
+function clipText(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const chars = Array.from(flat);
+  return chars.length > max ? chars.slice(0, max).join('') + '…' : flat;
+}
+
 /** 与上游一致：条目级 `chatMemoryRounds`，非法或缺失回落 5。 */
 function roundsOf(conf: Record<string, unknown>): number {
   const v = Number(conf.chatMemoryRounds);
@@ -200,16 +210,30 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   let scheduler: ExtractionScheduler | null = null;
 
   /**
+   * 配置相关的告警去过重。
+   *
+   * 记忆预算在**每次召回**时解析（这样改配置不用重启），代价是坏配置会每轮刷一条 warn。
+   * 一次写错换来满屏日志，真正的问题反而被埋掉——同样的消息只说一次。
+   */
+  const warnedConfig = new Set<string>();
+  const warnConfigOnce = (message: string): void => {
+    if (warnedConfig.has(message)) return;
+    warnedConfig.add(message);
+    log.warn(message);
+  };
+
+  /**
    * 取某只宠物所属条目的配置（记忆预算是条目级字段，与 `chatMemoryRounds` 同一口径）。
    *
    * 读不到（宠物已被删、配置坏了）就给空对象：召回只是少带几条往事，不该因此报错。
-   * 每次召回现读一遍，是为了让用户改了 `chatMemory*` 之后不必重启应用。
+   * 每次召回现读一遍，是为了让用户改了 `chatMemory*` 之后不必重启应用——实测一次
+   * `readAllConfig` 约 1.4ms，相对一次模型调用可以忽略。
    */
   const entryConfigOf = (petId: string): Record<string, unknown> => {
     try {
       return findPetInstance(readAllConfig(configPaths), petId)?.conf ?? {};
     } catch (error) {
-      log.warn(
+      warnConfigOnce(
         `[dsh-pet][soul] 读取记忆预算配置失败（按默认值处理）：${error instanceof Error ? error.message : String(error)}`,
       );
       return {};
@@ -265,7 +289,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
                 query,
                 facts: facts.list(petId, { limit: 200 }),
                 searchEvents: () => opened.search(petId, query),
-                budget: memoryBudgetOf(entryConfigOf(petId), (message) => log.warn(message)),
+                budget: memoryBudgetOf(entryConfigOf(petId), warnConfigOnce),
               }),
           };
 
@@ -406,17 +430,26 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       events === null
         ? undefined
         : async (petId, query, limit) => {
-            const found =
-              query === undefined
-                ? events.list(petId, { limit, order: 'desc' })
-                : events.search(petId, query, { candidateLimit: limit }).map((hit) => hit.event);
-            return found.map((one) => ({
-              id: one.id,
-              occurredAt: one.occurredAt,
-              role: one.role,
-              text: one.text,
-              kind: one.kind,
-              source: one.source,
+            if (query === undefined) {
+              // 浏览：没有匹配过程，也就没有「为什么想起」
+              return events.list(petId, { limit, order: 'desc' }).map((one) => ({
+                id: one.id,
+                occurredAt: one.occurredAt,
+                role: one.role,
+                text: one.text,
+                kind: one.kind,
+                source: one.source,
+              }));
+            }
+            return events.search(petId, query, { candidateLimit: limit }).map((hit) => ({
+              id: hit.event.id,
+              occurredAt: hit.event.occurredAt,
+              role: hit.event.role,
+              text: hit.event.text,
+              kind: hit.event.kind,
+              source: hit.event.source,
+              // 命中通道：界面上用来解释「为什么想起这一条」
+              via: hit.via,
             }));
           },
     deleteMemories:
@@ -442,14 +475,28 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
         ? undefined
         : async (petId, limit) => {
             const store = factStore;
-            return store.list(petId, { limit }).map((fact) => ({
-              id: fact.id,
-              subject: fact.subject,
-              predicate: fact.predicate,
-              value: fact.value,
-              confidence: fact.confidence,
-              updatedAt: fact.updatedAt,
-            }));
+            // 来源摘要一次查完（不是每条一次）：面板上「来自哪句话」要跟着列表一起出现
+            const digest = store.sourceDigest(petId);
+            return store.list(petId, { limit }).map((fact) => {
+              const source = digest[fact.id];
+              return {
+                id: fact.id,
+                subject: fact.subject,
+                predicate: fact.predicate,
+                value: fact.value,
+                confidence: fact.confidence,
+                updatedAt: fact.updatedAt,
+                sources: source?.count ?? 0,
+                ...(source?.latest === undefined
+                  ? {}
+                  : {
+                      from: {
+                        text: clipText(source.latest.text, FACT_SOURCE_CHARS),
+                        occurredAt: source.latest.occurredAt,
+                      },
+                    }),
+              };
+            });
           },
     correctFacts:
       factStore === null

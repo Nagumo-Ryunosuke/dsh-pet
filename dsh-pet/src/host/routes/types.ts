@@ -37,6 +37,13 @@ export interface MemoryItem {
   readonly kind: string;
   /** 来源（`chat` = 用户在宠物聊天里主动说的）。 */
   readonly source: string;
+  /**
+   * 检索命中走的通道（只有带 `q=` 检索时才有）。
+   *
+   * 界面上用来回答「为什么想起这一条」：原文命中 / 短词回退 / 拆词匹配。
+   * 浏览全部时没有匹配过程，所以缺省。
+   */
+  readonly via?: 'fts' | 'substring' | 'decomposed';
 }
 
 /** 一条长期事实（`GET /facts` 的条目，只取显示与纠错用到的字段）。 */
@@ -53,6 +60,10 @@ export interface FactItem {
   readonly confidence: number;
   /** 最后更新时间（毫秒）。 */
   readonly updatedAt: number;
+  /** 还活着的来源条数（她是从几处对话里提炼出这条的）。 */
+  readonly sources: number;
+  /** 最新一处来源的正文与时刻：回答「你从哪知道的」的那句话。 */
+  readonly from?: { readonly text: string; readonly occurredAt: number };
 }
 
 /** 一次路由调用的输入：URL 已解析，`rest` 是去掉前缀并解码后的路径。 */
