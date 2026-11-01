@@ -130,7 +130,11 @@ export function createChatMemory(deps: ChatMemoryInput) {
     kind: 'whisper' | 'manual' = 'manual',
   ): Promise<
     | { ok: true; text: string; image?: string }
-    | { ok: false; reason: 'provider-missing' | 'generate-error' | 'unknown-pet' | 'unknown-image'; message?: string }
+    | {
+        ok: false;
+        reason: 'provider-missing' | 'generate-error' | 'unknown-pet' | 'unknown-image' | 'invalid-input';
+        message?: string;
+      }
   > => {
     const cfg = readAllConfig(configPaths);
     const found = findPetInstance(cfg, petId);
@@ -220,7 +224,7 @@ export function createChatMemory(deps: ChatMemoryInput) {
     image?: PetImageRef,
   ): Promise<
     | { ok: true; text: string; image?: string }
-    | { ok: false; reason: 'provider-missing' | 'generate-error' | 'unknown-pet'; message?: string }
+    | { ok: false; reason: 'provider-missing' | 'generate-error' | 'unknown-pet' | 'invalid-input'; message?: string }
   > =>
     withMemoryLock(async () => {
       const cfg = readAllConfig(configPaths);
@@ -314,7 +318,9 @@ export function createChatMemory(deps: ChatMemoryInput) {
   const deleteHistory = async (
     petId: string,
     ts?: readonly number[],
-  ): Promise<{ ok: true; removed: number } | { ok: false; reason: 'unknown-pet'; message: string }> =>
+  ): Promise<
+    { ok: true; removed: number } | { ok: false; reason: 'unknown-pet' | 'cleanup-failed'; message: string }
+  > =>
     withMemoryLock(async () => {
       const cfg = readAllConfig(configPaths);
       const found = findPetInstance(cfg, petId);

@@ -14,22 +14,24 @@
 import type { HostContext } from '../plugin/context.ts';
 
 /** 拒绝文案：说明当前模式、限制来源和可用入口，避免让用户以为是宠物出了故障。 */
-const REFUSAL = 'soul 模式（M0 假后端）：斜杠命令暂不支持，请在聊天窗口里对话';
+const refusalOf = (label: string): string => `${label}：斜杠命令暂不支持，请在聊天窗口里对话`;
 
 /**
  * 注册 soul 模式的 `/chat` 占位命令。
  *
- * @param deps - 宿主上下文（只用 `ctx.commands` 与 `ctx.effect` 生命周期）。
+ * @param deps - 宿主上下文（只用 `ctx.commands` 与 `ctx.effect` 生命周期）；
+ *   `label` 是拒绝文案里的模式名（如「M0 假后端」「soul」）——写死一个会误导排错的人。
  */
-export function registerSoulChatCommand(deps: { ctx: HostContext }): void {
+export function registerSoulChatCommand(deps: { ctx: HostContext; label?: string }): void {
   const { ctx } = deps;
+  const refusal = refusalOf(deps.label ?? 'soul 模式');
   ctx.effect(
     () =>
       ctx.commands.register({
         name: 'chat',
         description: '与桌宠对话（soul 模式下暂不支持，请用聊天窗口）',
         input: { hint: '[消息]' },
-        handler: () => ({ kind: 'error', text: REFUSAL }),
+        handler: () => ({ kind: 'error', text: refusal }),
       }),
     'dsh-pet: /chat command (soul stub)',
   );

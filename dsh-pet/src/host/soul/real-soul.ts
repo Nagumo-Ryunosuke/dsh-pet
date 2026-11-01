@@ -42,9 +42,11 @@ import {
   type MemoryHit,
   type RecalledMemory,
   type Soul,
+  type SqliteDatabase,
   type TurnStore,
   type UsageTracker,
   createUsageTracker,
+  turnTsFromEventId,
   withUsage,
 } from '@deepseek-pet/soul';
 
@@ -175,6 +177,7 @@ function openStores(
   userRoot: string,
   log: HostSetup['log'],
 ): {
+  db: SqliteDatabase | null;
   turns: TurnStore;
   events: EventStore | null;
   facts: SqliteFactStore | null;
@@ -186,6 +189,7 @@ function openStores(
   try {
     const db = openSoulDatabase({ file });
     return {
+      db,
       turns: new SqliteTurnStore({ database: db }),
       events: new SqliteEventStore({ database: db }),
       // 事实与任务共用同一个句柄：它们和事件在同一个文件里，分连接会互相抢写锁
@@ -201,7 +205,7 @@ function openStores(
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return { turns: new TurnHistory(), events: null, facts: null, jobs: null, summaries: null, file: null };
+    return { db: null, turns: new TurnHistory(), events: null, facts: null, jobs: null, summaries: null, file: null };
   }
 }
 
@@ -235,6 +239,12 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   let personaId: string | undefined;
   // 记忆存储提到函数作用域：端点的列出/删除也要用它，不能困在人格可用的分支里
   let events: EventStore | null = null;
+
+  /** 聊天历史存储：模型上下文直接从这里读（最近几轮）；删记忆要连带删这里。 */
+  let turnStore: TurnStore | null = null;
+
+  /** 底层 SQLite 句柄：跨存储的删除要包成一个事务（任一步失败整体回滚）。 */
+  let dbHandle: SqliteDatabase | null = null;
   /** 事实存储：删除单条记忆时要同步切断来源；端点后续也用它。 */
   let factStore: SqliteFactStore | null = null;
   /** 摘要存储：端点列摘要要用；它和事件/事实共用同一个句柄。 */
@@ -317,8 +327,18 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     const extractModel = withUsage(baseModel, 'extract', usage);
     const summarizeModel = withUsage(baseModel, 'summarize', usage);
     // 历史与记忆：落库优先，失败退回内存（见 openStores 的说明）
-    const { turns, events: opened, facts, jobs, summaries: summaryStore, file: storeFile } = openStores(userRoot, log);
+    const {
+      db,
+      turns,
+      events: opened,
+      facts,
+      jobs,
+      summaries: summaryStore,
+      file: storeFile,
+    } = openStores(userRoot, log);
     events = opened;
+    turnStore = turns;
+    dbHandle = db;
     factStore = facts;
     summaryStoreRef = summaryStore;
     if (storeFile !== null) log.info(`[dsh-pet][soul] 历史落库：${storeFile}`);
@@ -334,17 +354,22 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
             // 召回：事实（「她知道的」）排在聊天原文之前，两者共享同一份预算。
             // 预算按条目级配置解析（chatMemoryItems / Tokens / ItemTokens / Facts），
             // 缺省 5 条 / 400 token / 单条 120 / 事实 3 条；写坏回落默认并留 warn
-            recall: (petId: string, query: string): RecalledMemory[] =>
-              recallWithFacts({
+            recall: (petId: string, query: string, contextOldestTs?: number): RecalledMemory[] => {
+              // 冷启动：重启后线索环是空的，事件表里却有历史原话——不补一次的话，
+              // 近指（「那个战队」）在攒满几轮前完全失效
+              if (!recentUserText.has(petId)) rebuildRecentText(petId);
+              return recallWithFacts({
                 petId,
                 query,
                 facts: facts.list(petId, { limit: 200 }),
                 // 摘要不按关键词筛（它的价值是「接上上次」），只取最近几段
                 summaries: summaryStore === null ? [] : summaryStore.list(petId, { limit: 5 }),
                 recentText: recentUserText.get(petId) ?? [],
+                contextOldestTs,
                 searchEvents: () => opened.search(petId, query),
                 budget: memoryBudgetOf(entryConfigOf(petId), warnConfigOnce),
-              }),
+              });
+            },
           };
 
     soul = createSoul({
@@ -353,6 +378,12 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       // 历史落库（`<userRoot>/soul.db`）：重启后还能接上，这是 M1 第二阶段的目标
       history: turns,
       ...memoryCapabilities,
+      // 在途失效必须真的接到数据版本上：不传的话版本恒为 0，生成期间删除后
+      // 旧回复照样落库——「删除使在途对话作废」就成了空话
+      ...(opened === null ? {} : { dataVersionOf: (id: string) => opened.dataVersion(id) }),
+      // 事务收口到一处：deleteTurns 的「删历史 + 忘记忆」自己会包事务，
+      // 将来新增调用点忘包外层也不会退回半套状态
+      atomic: (fn) => atomic('soul_write', fn),
       log,
     });
 
@@ -363,7 +394,18 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       const rebuilder =
         summaryStore === null
           ? undefined
-          : createSummaryRebuilder(summaryStore, summarizeModel, jobs, log, undefined, (id) => opened.dataVersion(id));
+          : createSummaryRebuilder(
+              summaryStore,
+              summarizeModel,
+              jobs,
+              log,
+              undefined,
+              (id) => opened.dataVersion(id),
+              // 落库三步（存新 + 撤旧 + 完成任务）整体提交：半途成功会重复调模型
+              (fn) => {
+                atomic('rebuild_summary', fn);
+              },
+            );
       const rebuildHook =
         rebuilder === undefined ? undefined : (petId: string, at: number) => rebuilder.rebuild(petId, at);
       // 每日预算是全局的，取第一个条目的配置（越界写坏时 warn 一次）
@@ -431,7 +473,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     requestId?: string,
   ): Promise<
     | { ok: true; text: string; image?: string }
-    | { ok: false; reason: 'provider-missing' | 'generate-error' | 'unknown-pet'; message?: string }
+    | { ok: false; reason: 'provider-missing' | 'generate-error' | 'unknown-pet' | 'invalid-input'; message?: string }
   > => {
     if (soul === null) return personaUnavailable;
     if (findPetInstance(readAllConfig(configPaths), petId) === undefined) {
@@ -451,14 +493,15 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     if (!result.ok) {
       return {
         ok: false,
-        reason: result.reason === 'invalid-input' ? 'generate-error' : result.reason,
+        reason: result.reason,
         message: result.message,
       };
     }
     // 记下这一轮的用户原话，给下一轮召回的「最近话题」用（指代「那个战队」时唯一的线索）。
-    // 只在成功后记：失败的那一轮没进历史，也不该影响下一轮的线索
+    // 只在成功后记：失败的那一轮没进历史，也不该影响下一轮的线索。
+    // 幂等回放不重复入环：同一句占两格会挤掉近指窗口里另一条线索（整环去重，防非末尾重放）
     const ring = recentUserText.get(petId) ?? [];
-    ring.push(text.trim());
+    if (!ring.includes(text.trim())) ring.push(text.trim());
     while (ring.length > RECENT_USER_TURNS) ring.shift();
     recentUserText.set(petId, ring);
     // 与上游同一条展示链路：气泡读的是这个叶子，窗口与气泡必然一致
@@ -468,26 +511,109 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     return { ok: true, text: result.text };
   };
 
+  /**
+   * 「最近话题」召回线索按存活事件重建：删掉的原话不能再当线索。
+   *
+   * 删记忆和删历史都要走这里——缓存里留着已删原话的话，后续对话可能因这段
+   * 已删内容召回其它事实，等于变相把删掉的话又用了一次。
+   *
+   * **绝不抛错**：这是派生态，且在删除事务提交之后跑——让它抛错会把已成功的
+   * 删除谎报成「未做任何更改」。失败时**置空缓存**：宁可这轮少一条指代线索，
+   * 也不能让旧缓存里的已删原话继续当召回依据。
+   */
+  const rebuildRecentText = (petId: string): void => {
+    if (events === null) return;
+    try {
+      recentUserText.set(
+        petId,
+        events
+          .list(petId, { limit: RECENT_USER_TURNS * 2, order: 'desc' })
+          .filter((one) => one.role === 'user')
+          .map((one) => one.text)
+          .reverse(),
+      );
+    } catch (error) {
+      recentUserText.set(petId, []);
+      log.warn(
+        `[dsh-pet][soul] 最近话题线索重建失败（已清空缓存；删除本身已生效）pet=${petId}：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  };
+
+  /**
+   * 跨存储的多步写入包成一个事务：各 store 共用同一个 SQLite 句柄，
+   * 外层 SAVEPOINT 罩得住它们各自的内层 SAVEPOINT。没有句柄（内存降级）就裸执行。
+   */
+  const atomic = <T>(name: string, fn: () => T): T => {
+    if (dbHandle === null) return fn();
+    dbHandle.exec(`SAVEPOINT ${name}`);
+    try {
+      const out = fn();
+      dbHandle.exec(`RELEASE ${name}`);
+      return out;
+    } catch (error) {
+      dbHandle.exec(`ROLLBACK TO ${name}`);
+      dbHandle.exec(`RELEASE ${name}`);
+      throw error;
+    }
+  };
+
   const deleteHistory = async (
     petId: string,
     ts?: readonly number[],
-  ): Promise<{ ok: true; removed: number } | { ok: false; reason: 'unknown-pet'; message: string }> => {
+  ): Promise<
+    { ok: true; removed: number } | { ok: false; reason: 'unknown-pet' | 'cleanup-failed'; message: string }
+  > => {
     if (entryOf(petId) === undefined) {
       return { ok: false, reason: 'unknown-pet', message: '没有这只桌宠：' + petId };
     }
-    const removed = soul === null ? 0 : soul.deleteTurns(petId, ts);
-    log.info(`[dsh-pet][soul] 删除历史 pet=${petId} removed=${removed}` + (ts === undefined ? '（清空）' : ''));
-    return { ok: true, removed };
+    try {
+      // 整套（删历史 + 忘记忆）包成一个事务：清理失败要把历史一起回滚——
+      // 否则轮次从界面上消失，用户再也选不中它补做清理（删记忆同款口径）
+      if (soul === null) {
+        // 人格不可用 ≠ 没有历史：假成功会让用户以为删了，修好人格后「已删除」的又全回来
+        return {
+          ok: false,
+          reason: 'cleanup-failed',
+          message: '人格不可用，删除未执行（历史未做任何更改）',
+        };
+      }
+      const removed = atomic('del_history', () => soul.deleteTurns(petId, ts));
+      // 已删原话退出「最近话题」线索环（与删记忆同一口径）
+      rebuildRecentText(petId);
+      log.info(`[dsh-pet][soul] 删除历史 pet=${petId} removed=${removed}` + (ts === undefined ? '（清空）' : ''));
+      return { ok: true, removed };
+    } catch (error) {
+      // 已整体回滚：历史和记忆都没动，用户直接重试即可
+      log.error(
+        `[dsh-pet][soul] 删除历史失败（已回滚，可重试）pet=${petId}：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return {
+        ok: false,
+        reason: 'cleanup-failed',
+        message: '删除未完成（未做任何更改），请重试：' + (error instanceof Error ? error.message : String(error)),
+      };
+    }
   };
 
   /** 主动发言：M1 第一步没做意图与调度，明确拒绝而不是假装成功。 */
+  const whisperWarned = new Set<string>();
   const publishWhisper = async (petId: string): Promise<{ ok: false; reason: 'generate-error'; message: string }> => {
-    log.warn(`[dsh-pet][soul] 拒绝碎碎念 pet=${petId}（M1 尚未实现主动发言）`);
+    // 调度约 5 分钟一拍：同一宠物只留一行 warn，不然日志每天几百行刷屏（fake-soul 同款口径）
+    if (!whisperWarned.has(petId)) {
+      whisperWarned.add(petId);
+      log.warn(`[dsh-pet][soul] 拒绝碎碎念 pet=${petId}（M1 尚未实现主动发言；同一宠物只记一次）`);
+    }
     return { ok: false, reason: 'generate-error', message: 'soul 模式暂不提供碎碎念' };
   };
 
   const publishSleepTalk = async (petId: string): Promise<boolean> => {
-    log.warn(`[dsh-pet][soul] 拒绝梦话 pet=${petId}（M1 尚未实现主动发言）`);
+    if (!whisperWarned.has('sleep:' + petId)) {
+      whisperWarned.add('sleep:' + petId);
+      log.warn(`[dsh-pet][soul] 拒绝梦话 pet=${petId}（M1 尚未实现主动发言；同一宠物只记一次）`);
+    }
     return false;
   };
 
@@ -537,27 +663,67 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       events === null
         ? undefined
         : async (petId, ids) => {
-            const removed = events.softDelete(petId, ids);
-            // 派生数据要跟着退：由它单独支撑的事实撤掉来源，覆盖它的摘要整条退出检索。
-            // 漏掉任一条，都会变成「我从面板删了这句话，她还在提」——这是这一层唯一不能破的承诺
-            const now = Date.now();
-            let detached = 0;
-            if (factStore !== null) {
-              for (const id of ids) detached += factStore.detachEvent(petId, id, now);
+            // 「忘掉」按轮对齐：同一轮的两条事件同生共死——只删选中的那条，另一条
+            // （比如复述了用户想忘掉内容的回复）还能被检索/抽取，她照样会提起。
+            // 与删聊天历史同一口径：先按 id 解出轮次，再整轮处理（idsAt 取全量 id 供派生清理）。
+            // 只认「确实属于这只宠物、确实存在」的事件 id：请求可以编造、也可以来自别的宠物，
+            // 直接信它会误删当前宠物同一时间戳的整轮
+            const turnTs = [
+              ...new Set(
+                ids
+                  .map((id) => ({ id, ts: turnTsFromEventId(id) }))
+                  .filter((one): one is { id: string; ts: number } => one.ts !== undefined)
+                  .filter((one) => events.idsAt(petId, [one.ts]).includes(one.id))
+                  .map((one) => one.ts),
+              ),
+            ];
+            const extraIds = turnTs.length > 0 ? events.idsAt(petId, turnTs) : [];
+            const targets = [...new Set([...ids, ...extraIds])];
+
+            // 整套删除放进一个事务：软删除、派生清理、聊天原文删除要么全部成功、要么全部回滚。
+            // 半途失败时条目会从面板消失，用户再也选不中它去重试——所以绝不能留下半套状态。
+            // 各 store 共用同一个 SQLite 句柄，外层 SAVEPOINT 罩得住它们各自的内层 SAVEPOINT
+            const cleanup = (): { removed: number; detached: number; dirtied: number; turns: number } => {
+              const removed = events.softDelete(petId, targets);
+              const now = Date.now();
+              let detached = 0;
+              if (factStore !== null) {
+                for (const id of targets) detached += factStore.detachEvent(petId, id, now);
+              }
+              let dirtied = 0;
+              if (summaryStoreRef !== null) {
+                for (const id of targets) dirtied += summaryStoreRef.dirtyByEvent(petId, id, now);
+              }
+              if (turnTs.length > 0 && turnStore !== null) turnStore.delete(petId, turnTs);
+              return { removed, detached, dirtied, turns: turnTs.length };
+            };
+            let done: ReturnType<typeof cleanup>;
+            try {
+              done = atomic('mem_delete', cleanup);
+            } catch (error) {
+              // 回滚后条目仍在面板里，用户可以直接重试；如实上报，绝不假成功
+              const reason = error instanceof Error ? error.message : String(error);
+              log.error(`[dsh-pet][soul] 删除记忆失败（已回滚，可重试）pet=${petId}：${reason}`);
+              throw new Error(`删除未完成（未做任何更改），请重试：${reason}`);
             }
-            let dirtied = 0;
-            if (summaryStoreRef !== null) {
-              for (const id of ids) dirtied += summaryStoreRef.dirtyByEvent(petId, id, now);
-            }
+            // 「最近话题」的召回线索按存活事件重建：删掉的原话不再当线索（自愈式，不怕漂移）
+            rebuildRecentText(petId);
             log.info(
-              `[dsh-pet][soul] 删除记忆 pet=${petId} removed=${removed}` +
-                (detached > 0 ? ` 派生事实来源 ${detached} 条` : '') +
-                (dirtied > 0 ? ` 摘要退出 ${dirtied} 条` : '') +
+              `[dsh-pet][soul] 删除记忆 pet=${petId} removed=${done.removed}` +
+                (done.detached > 0 ? ` 派生事实来源 ${done.detached} 条` : '') +
+                (done.dirtied > 0 ? ` 摘要退出 ${done.dirtied} 条` : '') +
+                (done.turns > 0 ? ` 聊天轮次 ${done.turns} 轮` : '') +
                 ' 清理范围=运行系统不可见（磁盘 WAL/备份未清理）',
             );
             // cleanup 永远是 system-invisible：本操作只软删除，不会去动磁盘上的 WAL / 备份；
-            // 要彻底清除得走备份轮转或手动 VACUUM，那是一条独立路径。UI 据此如实区分两层
-            return { removed, detached, dirtied, cleanup: 'system-invisible' as const };
+            // 要彻底清除得走备份轮转或手动清理，那是一条独立路径。UI 据此如实区分两层
+            return {
+              removed: done.removed,
+              detached: done.detached,
+              dirtied: done.dirtied,
+              turnsRemoved: done.turns,
+              cleanup: 'system-invisible' as const,
+            };
           },
     // 事实可见化：面板里看到的就是提示词会用的事实（同一个库、同一条 active 过滤）
     listFacts:
@@ -613,8 +779,68 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
             log.info(`[dsh-pet][soul] 纠正事实 pet=${petId} corrected=${corrected}/${ids.length}`);
             return corrected;
           },
-    orphanHistory: async () => [],
-    deleteOrphans: async () => ({ ok: true as const, pets: 0, messages: 0 }),
+    // 已删宠物的残留历史：配置里已经没有这只宠物，但库里还有它的历史。
+    // 不能再从面板选中它——看不见、删不掉的残留只能改库，且 petId 被复用时旧内容会被召回。
+    // 这里如实列出来（entry 无从恢复，用 petId 顶替；SQLite 只存 pet_id）
+    orphanHistory: async () => {
+      if (dbHandle === null) return [];
+      const known = new Set(
+        flattenPetList(readAllConfig(configPaths))
+          .map((pet) => String(pet.id ?? ''))
+          .filter((id) => id !== ''),
+      );
+      const rows = dbHandle
+        .prepare('SELECT pet_id, COUNT(*) AS n, MAX(ts) AS last FROM turns GROUP BY pet_id')
+        .all() as { pet_id: string; n: number | bigint; last: number | bigint }[];
+      return rows
+        .filter((row) => row.pet_id !== '' && !known.has(row.pet_id))
+        .map((row) => ({
+          entry: row.pet_id,
+          petId: row.pet_id,
+          messages: Number(row.n),
+          lastTs: Number(row.last),
+        }));
+    },
+    // 清残留与「删历史」同口径：事件软删（含派生清理、推进数据版本）+ 删 turns，整体一个事务
+    deleteOrphans: async () => {
+      if (dbHandle === null) return { ok: true as const, pets: 0, messages: 0 };
+      const orphans = await (async () => {
+        const known = new Set(
+          flattenPetList(readAllConfig(configPaths))
+            .map((pet) => String(pet.id ?? ''))
+            .filter((id) => id !== ''),
+        );
+        const rows = dbHandle.prepare('SELECT pet_id, COUNT(*) AS n FROM turns GROUP BY pet_id').all() as {
+          pet_id: string;
+          n: number | bigint;
+        }[];
+        return rows.filter((row) => row.pet_id !== '' && !known.has(row.pet_id));
+      })();
+      let pets = 0;
+      let messages = 0;
+      let failed = 0;
+      for (const orphan of orphans) {
+        const petId = orphan.pet_id;
+        try {
+          atomic(`orphan_${pets}`, () => {
+            events?.softDeleteAll(petId);
+            factStore?.retractAll(petId, Date.now());
+            summaryStoreRef?.retractAll(petId, Date.now());
+            messages += turnStore?.delete(petId).removed ?? 0;
+          });
+          pets += 1;
+          // 已删宠物的原话退出「最近话题」环：petId 被复用后，旧原话不能再当召回线索
+          recentUserText.delete(petId);
+        } catch (error) {
+          // 逐只失败要计数上报：恒 ok:true 会让用户以为清干净了，下回它又出现在列表里
+          failed += 1;
+          log.error(
+            `[dsh-pet][soul] 清理残留历史失败 pet=${petId}：${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      return { ok: true as const, pets, messages, failed };
+    },
     // 后台维护入口：宿主定时器驱动；库不可用时没有这个入口
     maintenance: scheduler === null ? undefined : { tick: (now?: number) => scheduler!.tick(now) },
     // 模型调用用量：人格加载成功（网关已包装）时才有；否则不提供

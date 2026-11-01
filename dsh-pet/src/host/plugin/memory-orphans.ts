@@ -54,7 +54,7 @@ export function createMemoryOrphans(deps: OrphanDeps) {
   };
 
   /** 清掉所有残留分桶；空条目一并摘除。 */
-  const deleteOrphans = async (): Promise<{ ok: true; pets: number; messages: number }> =>
+  const deleteOrphans = async (): Promise<{ ok: true; pets: number; messages: number; failed?: number }> =>
     withLock(async () => {
       const cfg = readAllConfig(configPaths);
       const mem = await readMemory();

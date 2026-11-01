@@ -93,7 +93,8 @@ export async function handleInteractionRoutes(deps: PetRouteDeps, input: RouteIn
       if (r.ok) return okResult({ ok: true, text: r.text, ...(r.image ? { image: r.image } : {}) });
       // 真实 reason 原样透出（独立模式是 `provider-missing`，见 ./whisper 的联合体）——
       // 不再把一切失败糊成 generate-error，调用方据此能分清「没配模型」与「生成炸了」。
-      return failResult(r.reason, r.message ?? '生成失败');
+      // 唯一的映射是 invalid-input → bad-request：前者是域内精确说法，wire 词汇只有后者
+      return failResult(r.reason === 'invalid-input' ? 'bad-request' : r.reason, r.message ?? '生成失败');
     } catch (e) {
       return failResult('generate-error', e instanceof Error ? e.message : String(e));
     }

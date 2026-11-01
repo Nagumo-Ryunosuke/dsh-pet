@@ -278,3 +278,33 @@ describe('最近话题召回（指代/近指的最小可行版）', () => {
     assert.equal(recalled[0]?.id, 'f1', '查询命中的排最前');
   });
 });
+
+describe('上下文窗口去重', () => {
+  test('窗口内命中不占预算：追问时窗口外的旧记忆仍然进得来', () => {
+    // 6 条窗口内（更新鲜、排序天然靠前）+ 1 条窗口外的老记忆
+    const inWindow = [1, 2, 3, 4, 5, 6].map((n) => hit('w' + n, '最近聊的第' + n + '句', 5000 + n));
+    const old = hit('old', '很久以前说过的事', 100);
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '追问一句',
+      facts: [],
+      contextOldestTs: 4000,
+      searchEvents: () => [...inWindow, old],
+    });
+    // 先裁剪再滤的话：top-5 全是窗口内 → 全部丢弃 → 召回清零；
+    // 先滤再裁剪：只剩 old 一条，它必须在
+    assert.equal(recalled.length, 1);
+    assert.equal(recalled[0]?.id, 'old', '窗口外的老记忆不能被窗口内命中挤掉');
+  });
+
+  test('不给窗口边界时行为不变（全部参与预算）', () => {
+    const hits = [1, 2, 3].map((n) => hit('e' + n, '第' + n + '句', 5000 + n));
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '随便问问',
+      facts: [],
+      searchEvents: () => hits,
+    });
+    assert.equal(recalled.length, 3);
+  });
+});

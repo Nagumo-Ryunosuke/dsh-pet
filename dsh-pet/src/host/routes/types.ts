@@ -94,6 +94,8 @@ export interface MemoryDeleteResult {
   readonly detached: number;
   /** 因来源被删而整条退出检索的摘要条数。 */
   readonly dirtied: number;
+  /** 连带退出模型上下文的聊天轮数；0 = 被删的不是对话事件，聊天视图无变化。 */
+  readonly turnsRemoved?: number;
   /**
    * 清理范围：
    * - `system-invisible`：运行系统已不可见（软删除 + 数据版本前进，后台抽取不会复活），
@@ -122,7 +124,7 @@ export type GeneratedReply =
   | { ok: true; text: string; image?: string }
   | {
       ok: false;
-      reason: 'provider-missing' | 'generate-error' | 'unknown-pet' | 'unknown-image';
+      reason: 'provider-missing' | 'generate-error' | 'unknown-pet' | 'unknown-image' | 'invalid-input';
       message?: string;
     };
 
@@ -227,6 +229,7 @@ export interface PetRouteDeps {
    * 与本机宠物对话；image 缺省 = 纯文本，数据路径与加入图片前一致。
    *
    * `requestId` 是可选幂等键：同一次「发送动作」重试时复用，后端据此只生成一次。
+   * **仅 soul 后端实现**（原生后端 `chatWithPet` 不接第 4 参，重试会生成第二轮）；
    * 缺省表示不去重——只有客户端知道两次到达算不算同一件事，所以由它决定。
    */
   readonly chatWithPet: (
@@ -279,11 +282,13 @@ export interface PetRouteDeps {
   readonly deleteHistory: (
     petId: string,
     ts?: readonly number[],
-  ) => Promise<{ ok: true; removed: number } | { ok: false; reason: 'unknown-pet'; message: string }>;
+  ) => Promise<
+    { ok: true; removed: number } | { ok: false; reason: 'unknown-pet' | 'cleanup-failed'; message: string }
+  >;
   /** 已删宠物残留的记忆桶（配置里已没有这只宠物）。 */
   readonly orphanHistory: () => Promise<{ entry: string; petId: string; messages: number; lastTs: number }[]>;
   /** 清掉所有已删宠物的历史。 */
-  readonly deleteOrphans: () => Promise<{ ok: true; pets: number; messages: number }>;
+  readonly deleteOrphans: () => Promise<{ ok: true; pets: number; messages: number; failed?: number }>;
   /** 用户动画目录（按扩展名）。 */
   readonly userRootFor: (ext: string) => string;
   /** 包内动画目录（按扩展名）。 */

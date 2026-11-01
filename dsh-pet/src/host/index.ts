@@ -176,7 +176,10 @@ export function apply(ctx: any): void {
   // 非原生模式换成拒绝式占位命令：上游命令是 fire-and-forget，会先回「已发送」再异步生成，
   // 在接管模式下那句回执就是假成功。命令入口本轮标为不支持，只保证聊天窗口贯通。
   if (backendMode !== 'native') {
-    registerSoulChatCommand({ ctx });
+    registerSoulChatCommand({
+      ctx,
+      label: backendMode === 'fake' ? 'soul 模式（M0 假后端）' : 'soul 模式',
+    });
   } else {
     registerChatCommand({ ctx, chatWithPet, log, publishWhisper, resolveActivePetId, sleep, sleepRefusalText });
   }

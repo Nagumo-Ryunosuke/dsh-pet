@@ -89,6 +89,14 @@ export interface RecallInput {
   readonly summaries?: readonly Summary[];
   /** 最近几轮的用户原话（正序），用于「最近话题」召回；缺省不启用。 */
   readonly recentText?: readonly string[];
+  /**
+   * 上下文窗口最老一轮的时刻（窗口空时缺省）。
+   *
+   * **必须在裁预算之前**用它过滤窗口内的原文/摘要：最近几轮必然最新鲜、排序最靠前，
+   * 先裁剪再过滤的话，追问场景的 top-5 全是窗口内内容，丢弃后召回直接清零。
+   * 事实豁免窗口去重（它不是「某一轮说过的话」）。
+   */
+  readonly contextOldestTs?: number;
   /** 聊天原文的召回调；由调用方决定检索实现。 */
   readonly searchEvents: () => readonly MemoryHit[];
   /**
@@ -163,8 +171,16 @@ export function recallWithFacts(input: RecallInput): RecalledMemory[] {
   const summaryHits = (input.summaries ?? [])
     .slice(0, MAX_RECALLED_SUMMARIES)
     .map((summary) => summaryHit(input.petId, summary));
+  // 上下文窗口内的原文/摘要在**裁预算之前**就滤掉：它们已经在对话里，再以「往事」
+  // 的身份占预算纯属浪费——最近几轮最新鲜、排序最靠前，先裁剪再滤会把追问场景的
+  // 名额全部吃光，窗口外真正该想起的反而进不来。事实豁免（不是「某一轮说过的话」）
+  const outsideWindow = (hit: MemoryHit): boolean =>
+    input.contextOldestTs === undefined || hit.event.occurredAt < input.contextOldestTs;
   // trimToBudget 保持输入顺序：事实在前，预算不够时先保事实
-  const kept = trimToBudget([...factHits, ...recentHits, ...summaryHits, ...input.searchEvents()], input.budget ?? {});
+  const kept = trimToBudget(
+    [...factHits, ...recentHits, ...summaryHits.filter(outsideWindow), ...input.searchEvents().filter(outsideWindow)],
+    input.budget ?? {},
+  );
   return kept.map((hit) => ({
     id: hit.event.id,
     occurredAt: hit.event.occurredAt,
