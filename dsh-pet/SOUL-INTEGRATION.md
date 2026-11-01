@@ -60,12 +60,15 @@
 
 面板上的「忘掉」是**软删除**：事件行打上 `deleted_at`、全文索引同步移除、派生事实撤掉来源、覆盖它的摘要整条退出检索。运行系统立刻不可见——召回、检索、面板全部不再返回它。
 
+「忘掉」**按轮对齐**：同一轮的两条事件（一问一答）同生共死，只点一条也会把同轮另一条一起删掉——否则复述过用户想忘掉内容的回复还能被检索/抽取，她照样会提起。这一轮的聊天原文（`turns`）也同时退出模型上下文，聊天视图随之刷新。整套删除（事件软删 + 派生清理 + 原文删除）包在**一个 SQLite 事务**里：任一步失败整体回滚，条目仍留在面板里可直接重试。另外，**生成期间发生删除会使在途那轮对话作废**：用旧上下文生成的回复可能带出刚被忘掉的内容，所以不落历史、不落记忆，明确报错让用户重发。
+
 但磁盘上的数据不是瞬间消失的，这一点如实告知用户（删除后的面板说明与本文档口径一致）：
 
 - **SQLite 主库**（`<userRoot>/soul.db`）：软删除只是改行，不会收缩文件；被覆盖的页在 WAL checkpoint 后才归还给操作系统复用。
 - **WAL 文件**（`soul.db-wal` / `soul.db-shm`）：checkpoint 前的 WAL 里可能还留着被删内容的旧页。进程退出时 SQLite 会尽量 checkpoint，但不保证清零。
+- **软删除 ≠ 行已删除**：被「忘掉」的事件行**仍在主表里**（`events.text` 原文原样保留，只是标了 `deleted_at`），聊天原文还另存在 `turns` 表。`VACUUM` 只整理空闲页，**不会删除这些仍然有效的行**——「VACUUM 一下就抹掉了」是错的。
 - **备份与拷贝**：任何在此之前的 `soul.db` 拷贝（手动备份、同步盘、系统快照）都包含删除前的完整内容。
-- **物理抹除**：若需要从磁盘彻底抹掉，须对 `soul.db` 执行 `VACUUM` 并清理所有备份拷贝；当前版本不自动做这件事，也不建议自动做（抹掉的是全部历史，不只是被删的那条）。
+- **物理抹除的正确顺序**（当前版本不自动做，需要时人工执行）：先**硬删行**（`DELETE FROM events WHERE deleted_at IS NOT NULL`、删对应 `turns` 行、清理派生的 `facts` / `summaries` / `memory_sources`），再 `VACUUM` 收缩文件，然后删掉 `-wal` / `-shm` 与所有备份拷贝。顺序反了（先 VACUUM）什么也抹不掉。
 
 配套的「在途删除防护」：删除会使该宠物的数据版本 +1（`data_versions` 表）；每个抽取任务创建时记下当时的版本，模型调用完成后发现版本前进（删除发生在途）就整批作废——不把「用户刚删掉的那句话」提炼成事实。水位不前进，重试时已删内容自然不进批次。
 
@@ -77,4 +80,4 @@
 
 ## 测试
 
-`npm test` 全量 2227 项 0 失败（1 项跳过，为上游遗留）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`routes/usage.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。
+`npm test` 全量 2234 项 0 失败（1 项跳过，为上游遗留）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`routes/usage.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。
