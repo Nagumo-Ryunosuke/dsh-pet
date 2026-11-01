@@ -55,8 +55,6 @@ export function createDesktopSpawn(deps: DesktopSpawnInput) {
   const { ctx, getHandlePetRoute, log, reportDownload, thumbUserRoot, getHasDesktopPet, desktopPetList, getTrayOn } =
     deps;
 
-  let desktopModeEverActive = false;
-
   let helper: HelperProcess | undefined;
 
   let startRetryTimer: NodeJS.Timeout | undefined;
@@ -78,8 +76,9 @@ export function createDesktopSpawn(deps: DesktopSpawnInput) {
   const launchHelper = (electronPath: string | undefined): void => {
     if (inProcessHost) return; // 应用模式：窗口由本进程建，绝不 spawn
     if (helper || disposed) return;
-    // 无桌面宠物时：只有「桌面模式曾启用过且托盘还开着」才值得为托盘常驻，否则不启动
-    if (!getHasDesktopPet() && !(desktopModeEverActive && getTrayOn())) return;
+    // 没有桌面宠物也照常拉起（只要托盘开着）：托盘是桌面侧唯一能把被藏起来的宠物叫回来的
+    // 入口（它列出配置里全部宠物，含 display 为 web/none 的），跳过它等于把开关一起关掉
+    if (!getHasDesktopPet() && !getTrayOn()) return;
     const port = typeof ctx.webServer?.port === 'number' ? ctx.webServer.port : 0;
     if (!port || port <= 0) {
       // webServer 可能尚未完成监听（OS 分配端口时 port 短暂为 0）：延迟重试。
@@ -142,7 +141,6 @@ export function createDesktopSpawn(deps: DesktopSpawnInput) {
     );
     try {
       helper.start();
-      desktopModeEverActive = true; // 此后即使桌面宠物清零也保留 Helper：托盘常驻，可随时切回来
       log.info(`dsh-pet desktop helper started (config: ${configUrl})`);
     } catch (e) {
       log.warn(`dsh-pet desktop helper start failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -153,6 +151,22 @@ export function createDesktopSpawn(deps: DesktopSpawnInput) {
   const startHelper = (): void => {
     if (inProcessHost) return; // 应用模式：不探测、不下载 Electron
     if (helper || electronEnsure || disposed) return;
+    // 先问「要不要」，再问「产物齐不齐」：没有桌面宠物、托盘也关着的时候，
+    // 这台机器根本不该出现桌面 Helper——此时抱怨渲染核心缺失只会吓到纯网页用户。
+    // 托盘开着就必须拉起：托盘是桌面侧唯一能把被藏起来的宠物叫回来的入口
+    //（它列出配置里全部宠物，含 display 为 web/none 的），跳过它等于把开关一起关掉。
+    if (!getHasDesktopPet() && !getTrayOn()) {
+      // 诊断日志（issue #168）：这条短路不打日志，就是「桌面模式凭空消失：无进程、无目录、无提示」
+      // 的直接成因。用 info 而非 warn——纯网页用户这是正常状态；只打一次避免刷屏。
+      if (!noDesktopSkipped) {
+        noDesktopSkipped = true;
+        log.info(
+          `[dsh-pet] 无桌面宠物（display 均为 web/none）且托盘已关闭（tray=${getTrayOn()}），已跳过桌面 Helper 启动` +
+            `（想在桌面唤回宠物：设置里打开托盘，或在聊天面板点「显示桌宠」）`,
+        );
+      }
+      return;
+    }
     // 渲染核心缺失时**不建窗口**：窗口会照常出现但全透明（index.html 的第一个脚本就 404），
     // 用户看到的是「没有宠物」、`/pose` 回 pose-unavailable，排查方向会被带偏。
     // 直接说清楚缺什么、怎么补，比造一个幽灵窗口有用。
@@ -162,18 +176,6 @@ export function createDesktopSpawn(deps: DesktopSpawnInput) {
         log.error(
           '[dsh-pet] 桌面渲染核心缺失（runtime/electron-helper/shared-core.js）：桌面宠物不会显示。' +
             '它是 `npm run build:desktop-core` 的产物且被 gitignore——执行 `npm run build` 后重新同步安装目录。',
-        );
-      }
-      return;
-    }
-    if (!getHasDesktopPet() && !(desktopModeEverActive && getTrayOn())) {
-      // 诊断日志（issue #168）：这条短路不打日志，就是「桌面模式凭空消失：无进程、无目录、无提示」
-      // 的直接成因。用 info 而非 warn——纯网页用户这是正常状态；只打一次避免刷屏。
-      // 托盘关掉后这里也会命中：没人需要那个图标，空常驻没有意义。
-      if (!noDesktopSkipped) {
-        noDesktopSkipped = true;
-        log.info(
-          `[dsh-pet] 无桌面宠物（display 均为 web/none）且无需保留托盘（tray=${getTrayOn()}），已跳过桌面 Helper 启动`,
         );
       }
       return;
