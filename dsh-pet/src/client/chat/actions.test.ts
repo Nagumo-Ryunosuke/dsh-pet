@@ -331,9 +331,19 @@ describe('记忆卷帘的动作', () => {
     const original = globalThis.fetch;
     const resolvers: ((response: Response) => void)[] = [];
     globalThis.fetch = ((url: string) => {
-      // 事实与摘要单独取，且立即返回：这条例只关心 memory 的乱序
-      if (String(url).includes('/facts') || String(url).includes('/summaries')) {
-        return Promise.resolve(new Response(JSON.stringify({ ok: true, facts: [], summaries: [] }), { status: 200 }));
+      // 事实、摘要与用量单独取，且立即返回：这条例只关心 memory 的乱序
+      if (String(url).includes('/facts') || String(url).includes('/summaries') || String(url).includes('/usage')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              facts: [],
+              summaries: [],
+              usage: { calls: { chat: 0, extract: 0, summarize: 0 }, tokens: 'unknown' },
+            }),
+            { status: 200 },
+          ),
+        );
       }
       return new Promise<Response>((resolve) => {
         resolvers.push(resolve);

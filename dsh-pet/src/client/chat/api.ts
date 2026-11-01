@@ -389,20 +389,47 @@ export async function fetchMemories(petId: string, query?: string): Promise<Memo
   });
 }
 
+/** 记忆删除回执：删到了什么、清到了哪一层（运行系统不可见 vs 磁盘备份也清了）。 */
+export type MemoryDeleteResult =
+  | {
+      ok: true;
+      /** 运行系统里被软删除（退出检索）的事件条数。 */
+      readonly removed: number;
+      /** 因来源被删而解绑的派生事实条数。 */
+      readonly detached: number;
+      /** 因来源被删而退出检索的摘要条数。 */
+      readonly dirtied: number;
+      /**
+       * 清理范围：
+       * - `system-invisible`：运行系统已不可见，但磁盘 WAL / 备份可能仍保留；
+       * - `purged`：已从磁盘彻底清除。
+       */
+      readonly cleanup: 'system-invisible' | 'purged';
+    }
+  | { ok: false; message: string };
+
 /**
  * 删除若干条长期记忆（软删除：她再也不会提起，但原文留痕）。
  *
  * @param petId - 宠物 id。
  * @param ids - 要删除的记忆 id。
- * @returns 实际删除条数，或失败文案。
+ * @returns 删除回执（含清理范围），或失败文案。
  * @throws 网络中断时。
  */
-export async function deleteMemoriesById(petId: string, ids: readonly string[]): Promise<DeleteResult> {
-  if (ids.length === 0) return { ok: true, removed: 0 };
+export async function deleteMemoriesById(petId: string, ids: readonly string[]): Promise<MemoryDeleteResult> {
+  if (ids.length === 0) return { ok: true, removed: 0, detached: 0, dirtied: 0, cleanup: 'system-invisible' };
   const query = ids.map((value) => '&id=' + encodeURIComponent(value)).join('');
   const res = await fetch(ROUTE_PATH + '/memory?pet=' + encodeURIComponent(petId) + query, { method: 'DELETE' });
   const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-  if (body?.ok === true) return { ok: true, removed: Number(body.removed ?? 0) };
+  if (body?.ok === true) {
+    return {
+      ok: true,
+      removed: Number(body.removed ?? 0),
+      detached: Number(body.detached ?? 0),
+      dirtied: Number(body.dirtied ?? 0),
+      cleanup: body.cleanup === 'purged' ? 'purged' : 'system-invisible',
+    };
+  }
   return { ok: false, message: typeof body?.message === 'string' ? body.message : 'HTTP ' + res.status };
 }
 
@@ -512,6 +539,32 @@ export async function fetchFacts(petId: string): Promise<FactItemView[]> {
 /** 纠正结果：成功带条数，失败带可展示原因。 */
 export type CorrectResult =
   { readonly ok: true; readonly corrected: number } | { readonly ok: false; readonly message: string };
+
+/** 模型调用用量的客户端视图：按用途分桶的调用次数；token 永远是「未知」。 */
+export interface ModelUsageView {
+  /** 按用途累计的调用次数。 */
+  readonly calls: { readonly chat: number; readonly extract: number; readonly summarize: number };
+  /** token 用量：宿主模型层不透明，灵魂拿不到，永远记未知。 */
+  readonly tokens: 'unknown';
+}
+
+/** 取模型调用用量快照；后端不提供时回 null。 */
+export async function fetchUsage(): Promise<ModelUsageView | null> {
+  const res = await fetch(ROUTE_PATH + '/usage', { cache: 'no-store' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body === null || typeof body !== 'object') return null;
+  if (body.ok !== true || body.usage === undefined) return null;
+  const u = body.usage as Record<string, unknown>;
+  const calls = (typeof u.calls === 'object' && u.calls !== null ? u.calls : {}) as Record<string, unknown>;
+  return {
+    calls: {
+      chat: typeof calls.chat === 'number' ? calls.chat : 0,
+      extract: typeof calls.extract === 'number' ? calls.extract : 0,
+      summarize: typeof calls.summarize === 'number' ? calls.summarize : 0,
+    },
+    tokens: 'unknown',
+  };
+}
 
 /**
  * 把若干条事实标记为「不对」。

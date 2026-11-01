@@ -46,12 +46,35 @@
 - `src/client/chat/`：发送携带幂等键；「记忆」卷帘里把「她知道的事」（事实，可点「不对」）与「聊过的」（原文，可「忘掉」）分开展示。
 - `tsdown.config.mjs`：`@deepseek-pet/soul`、`zod`、`openai`、`@anthropic-ai/sdk` 改为内联（`noExternal`）——灵魂包不在任何 registry 上，插件按目录拷贝安装，外部引用会断。
 - `package.json` / `pnpm-lock.yaml`：依赖 `@deepseek-pet/soul`（`link:` 指向灵魂仓库，仅开发期）。
+- 记忆删除收尾（M2）：`deleteMemories` 返回完整结果（`removed` / `detached` / `dirtied` / `cleanup: 'system-invisible'`），路由原样透传；面板「忘掉」后展示两段式说明——运行系统已不可见，但磁盘备份 / WAL 未必清掉。
+- 在途删除防护（M2）：`real-soul` 给抽取器与摘要重建传入 `dataVersionOf`（`data_versions` 表随每次软删除自增）；抽取任务创建时记录 `source_version`，提交前发现版本前进则整批作废、水位不进、稍后重试（此时 `listAfter` 已自然排除被删内容）。
+- 模型调用用量（M1）：`real-soul` 把宿主网关按用途包成三份（`chat` / `extract` / `summarize`），共享一个 `createUsageTracker`；`GET /usage` 返回快照，面板卷帘底部多一段「调用记录」。
+- 新增 `src/host/routes/usage.ts`（+ `usage.test.ts`）。
 
 ## 行为变化
 
 - 默认（`native`）与上游一致，所有新代码休眠。
 - `soul` 模式下：聊天由灵魂驱动（人格 + 长期记忆 + 召回），**暂不支持**图片附件、`/chat` 斜杠命令、碎碎念与梦话（均明确报错，不假成功）；历史与 native 互不相通（不自动迁移 `memory.json`）。
 
+## 记忆删除的数据生命周期（M2）
+
+面板上的「忘掉」是**软删除**：事件行打上 `deleted_at`、全文索引同步移除、派生事实撤掉来源、覆盖它的摘要整条退出检索。运行系统立刻不可见——召回、检索、面板全部不再返回它。
+
+但磁盘上的数据不是瞬间消失的，这一点如实告知用户（删除后的面板说明与本文档口径一致）：
+
+- **SQLite 主库**（`<userRoot>/soul.db`）：软删除只是改行，不会收缩文件；被覆盖的页在 WAL checkpoint 后才归还给操作系统复用。
+- **WAL 文件**（`soul.db-wal` / `soul.db-shm`）：checkpoint 前的 WAL 里可能还留着被删内容的旧页。进程退出时 SQLite 会尽量 checkpoint，但不保证清零。
+- **备份与拷贝**：任何在此之前的 `soul.db` 拷贝（手动备份、同步盘、系统快照）都包含删除前的完整内容。
+- **物理抹除**：若需要从磁盘彻底抹掉，须对 `soul.db` 执行 `VACUUM` 并清理所有备份拷贝；当前版本不自动做这件事，也不建议自动做（抹掉的是全部历史，不只是被删的那条）。
+
+配套的「在途删除防护」：删除会使该宠物的数据版本 +1（`data_versions` 表）；每个抽取任务创建时记下当时的版本，模型调用完成后发现版本前进（删除发生在途）就整批作废——不把「用户刚删掉的那句话」提炼成事实。水位不前进，重试时已删内容自然不进批次。
+
+## 模型调用用量（M1）
+
+`GET /usage` 返回本次进程启动以来按用途分桶的模型调用次数：`chat`（对话）、`extract`（事实抽取）、`summarize`（摘要重建）。同一个底层网关按用途包成三份，各记各的；无论成败，调一次记一次。
+
+**token 永远是 `"unknown"`**：宿主模型层（`ctx.llm`）对灵魂不透明，`complete` 只回文本、不带回 token 用量。拿不到就如实记未知，绝不估算一个数字填进去——臆造的账比没有账更糟。面板「记忆」卷帘底部的「调用记录」段展示同一份快照。
+
 ## 测试
 
-`npm test` 全量 2214 项 0 失败（此前两处偶发已修：`withDeadline` 把截止定时器 `unref` 掉、body 超时与 413 的竞速）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。
+`npm test` 全量 2227 项 0 失败（1 项跳过，为上游遗留）。新增测试集中在 `src/host/routes/memory.test.ts`、`routes/facts.test.ts`、`routes/usage.test.ts`、`chat-idempotency.test.ts`、`src/host/soul/recall.test.ts`、`src/host/soul/budget.test.ts`、`src/client/chat/actions.test.ts`。

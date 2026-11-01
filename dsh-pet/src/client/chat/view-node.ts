@@ -195,9 +195,43 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
             ],
           }),
         );
+  // 调用记录：只数「调了几次」，token 那一栏如实写「未知」——
+  // 宿主模型层对灵魂不透明，拿不到就是不显示，绝不臆造一个数字
+  const usageRows =
+    state.usage === null
+      ? []
+      : [
+          h('div', { key: 'usage-title', className: 'pet-chat-memory-subtitle', children: '调用记录' }),
+          h('div', {
+            key: 'usage-line',
+            className: 'pet-chat-memory-summary',
+            children: [
+              h('span', { className: 'pet-chat-memory-when', children: '本次启动' }),
+              h('span', {
+                className: 'pet-chat-memory-text',
+                children:
+                  `对话 ${state.usage.calls.chat} 次・事实抽取 ${state.usage.calls.extract} 次・` +
+                  `摘要重建 ${state.usage.calls.summarize} 次・token 未知`,
+              }),
+            ],
+          }),
+        ];
   const body = state.memoryLoading
     ? [h('div', { key: 'loading', className: 'pet-chat-hint', children: '加载中…' })]
-    : [...factRows, ...eventRows];
+    : [...factRows, ...eventRows, ...usageRows];
+  // 「忘掉一条记忆」后的清理说明：运行系统已不可见，但磁盘备份 / WAL 未必清掉——
+  // 把这两层区分清楚，用户才不会误以为删了就等于从磁盘彻底消失
+  const note =
+    state.forgetNote === ''
+      ? []
+      : [
+          h('div', {
+            key: 'forget-note',
+            className: 'pet-chat-memory-note',
+            role: 'status',
+            children: state.forgetNote,
+          }),
+        ];
   return h('div', {
     id: MEMORY_PANEL_ID,
     className: 'pet-chat-memory-drawer' + (state.memoryOpen ? ' is-open' : ''),
@@ -219,6 +253,7 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
             },
           }),
           ...body,
+          ...note,
         ],
       }),
     ],
@@ -292,7 +327,7 @@ export function confirmNode(rt: ChatPanelRuntime, state: ChatPanelState): unknow
   // 留痕可审计）。两者都不是真删除，措辞要分开，别让用户以为数据从磁盘消失了
   const suffix =
     state.pending === 'forget-memory'
-      ? '之后她不会再提起。'
+      ? '之后她不会再提起。运行系统已不可见；但磁盘上的备份 / WAL 可能仍保留，直到备份轮转或手动清理。'
       : state.pending === 'correct-fact'
         ? '之后她不会再把这条当成事实。'
         : '删了找不回来。';

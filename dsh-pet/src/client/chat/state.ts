@@ -43,6 +43,8 @@ const INITIAL: PanelData = {
   memoryLoading: false,
   pendingMemoryId: null,
   pendingFactId: null,
+  forgetNote: '',
+  usage: null,
   speaking: null,
 };
 
@@ -124,6 +126,7 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
           memoryLoading: false,
           pendingMemoryId: null,
           pendingFactId: null,
+          forgetNote: '',
         });
         void reload(petId);
       },

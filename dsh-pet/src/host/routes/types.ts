@@ -9,6 +9,7 @@
 import type { ChatMemoryMessage } from '../chat.ts';
 import type { ConfigPaths } from '../config.ts';
 import type { RouteResult } from '../http.ts';
+import type { ModelUsage } from '@deepseek-pet/soul';
 import type { PetImageRef } from '../image-attachment.ts';
 import type { LockStore } from '../lock.ts';
 import type { FileLogger } from '../log-file.ts';
@@ -76,6 +77,30 @@ export interface SummaryItem {
   readonly periodEnd: number;
   /** 梗概正文。 */
   readonly text: string;
+}
+
+/**
+ * 记忆删除回执：把「删到了什么、清到了哪一层」一次说清。
+ *
+ * 删除是软删除（退出检索、原文留痕），并且会推进数据版本让在途的后台抽取作废——
+ * 所以运行系统里她立刻想不起这条；但磁盘上的 WAL / 备份快照仍可能保留原文，
+ * 直到备份轮转或手动清理。`cleanup` 字段就是用来在 UI 上区分这两层的，
+ * 别让用户误以为「删了 = 从磁盘彻底消失」。
+ */
+export interface MemoryDeleteResult {
+  /** 运行系统里被软删除（退出检索）的事件条数。 */
+  readonly removed: number;
+  /** 因来源被删而解绑的派生事实条数（来源全失的事实会被撤回，不会变成「无源事实」）。 */
+  readonly detached: number;
+  /** 因来源被删而整条退出检索的摘要条数。 */
+  readonly dirtied: number;
+  /**
+   * 清理范围：
+   * - `system-invisible`：运行系统已不可见（软删除 + 数据版本前进，后台抽取不会复活），
+   *   但磁盘上的 WAL / 备份快照仍可能保留原文，直到备份轮转或手动清理；
+   * - `purged`：已从磁盘彻底清除（需另行触发 VACUUM / 备份清理，本操作不直接做）。
+   */
+  readonly cleanup: 'system-invisible' | 'purged';
 }
 
 /** 一次路由调用的输入：URL 已解析，`rest` 是去掉前缀并解码后的路径。 */
@@ -220,8 +245,11 @@ export interface PetRouteDeps {
    * 用户会以为她真的什么都不记得。
    */
   readonly listMemories?: (petId: string, query: string | undefined, limit: number) => Promise<readonly MemoryItem[]>;
-  /** 删除若干条记忆（软删除：退出检索，原文留痕）。缺省时端点同样返回「不提供」。 */
-  readonly deleteMemories?: (petId: string, ids: readonly string[]) => Promise<number>;
+  /**
+   * 删除若干条记忆（软删除：退出检索、推进数据版本作废在途抽取、解绑派生事实、退出相关摘要）。
+   * 缺省时端点同样返回「不提供」。回执见 {@link MemoryDeleteResult}。
+   */
+  readonly deleteMemories?: (petId: string, ids: readonly string[]) => Promise<MemoryDeleteResult>;
   /**
    * 列出某只宠物的 active 事实（她「确定知道」的事）。
    *
@@ -242,6 +270,11 @@ export interface PetRouteDeps {
    * @returns 实际纠正的条数。
    */
   readonly correctFacts?: (petId: string, ids: readonly string[]) => Promise<number>;
+  /**
+   * 模型调用用量快照：按用途（对话 / 事实抽取 / 摘要重建）累计的调用次数；
+   * token 永远是「未知」——宿主模型层不透明，灵魂拿不到，绝不臆造。缺省时端点返回「不提供」。
+   */
+  readonly usage?: () => ModelUsage;
   /** 删除该宠物的对话记忆：ts 缺省 = 清空全部，否则只删命中的轮（成对）。 */
   readonly deleteHistory: (
     petId: string,

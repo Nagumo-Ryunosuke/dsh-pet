@@ -36,12 +36,16 @@ import {
   type EventStore,
   type ExtractionScheduler,
   type ModelGateway,
+  type ModelUsage,
   type Persona,
   type Summary,
   type MemoryHit,
   type RecalledMemory,
   type Soul,
   type TurnStore,
+  type UsageTracker,
+  createUsageTracker,
+  withUsage,
 } from '@deepseek-pet/soul';
 
 import { generateChat } from '../chat.ts';
@@ -86,6 +90,11 @@ export type RealSoul = ChatMemory & {
   readonly correctFacts: PetRouteDeps['correctFacts'];
   /** 列出对话摘要（只读）；存储不可用时为 `undefined`。 */
   readonly listSummaries: PetRouteDeps['listSummaries'];
+  /**
+   * 模型调用用量快照：按用途（对话 / 事实抽取 / 摘要重建）累计的调用次数；
+   * token 永远是「未知」——宿主模型层不透明，灵魂拿不到，绝不臆造。存储不可用时为 `undefined`。
+   */
+  readonly usage?: () => ModelUsage;
   /**
    * 后台维护（事实抽取）。只有库可用时才有；宿主用定时器驱动。
    * 与对话主链路完全解耦：维护失败/没开始，都不影响说话。
@@ -272,13 +281,16 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   };
   /** 正在生成回复的轮数：抽取要让路，不与用户等待的那句话抢模型。 */
   let activeTurns = 0;
+  // 用量累加器建在 if(loaded.ok) 块里，快照入口在块外的返回对象上——
+  // 用这个引用跨过块作用域；人格加载失败时保持 null，端点回「不提供」
+  let usageTracker: UsageTracker | null = null;
   if (loaded.ok) {
     personaId = loaded.persona.personaId;
     const echo = process.env[MODEL_ENV] === 'echo';
     if (echo) log.warn('[dsh-pet][soul] 使用回声模型（DSH_PET_SOUL_MODEL=echo）：仅用于链路验证，不调模型');
     // 模型网关：把宿主的生成能力包成「给 system + 历史 + 本次输入，回一句文本」。
     // 回声分支只服务链路验证，正常路径永远走 generateChat（内含 ctx.llm、模型候选与降级）。
-    const model: ModelGateway = echo
+    const baseModel: ModelGateway = echo
       ? { complete: async (request) => ({ text: `（回声）收到 ${request.userText.length} 个字。` }) }
       : {
           complete: async (request) => {
@@ -297,6 +309,13 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
             return { text: result.text };
           },
         };
+    // 用量计数：同一个底层网关按用途包成三份，各记各的——对话 / 事实抽取 / 摘要重建。
+    // token 这一栏永远记「未知」：宿主模型层（ctx.llm）对灵魂不透明，拿不到用量，绝不臆造
+    const usage = createUsageTracker();
+    usageTracker = usage;
+    const model = withUsage(baseModel, 'chat', usage);
+    const extractModel = withUsage(baseModel, 'extract', usage);
+    const summarizeModel = withUsage(baseModel, 'summarize', usage);
     // 历史与记忆：落库优先，失败退回内存（见 openStores 的说明）
     const { turns, events: opened, facts, jobs, summaries: summaryStore, file: storeFile } = openStores(userRoot, log);
     events = opened;
@@ -341,16 +360,24 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     // 这里只组装依赖；真正驱动在宿主侧的维护定时器里
     if (opened !== null && facts !== null && jobs !== null) {
       // 摘要存储与事件同库：库可用时它一定在；这里仍按可空处理，免得依赖装配顺序
-      const rebuilder = summaryStore === null ? undefined : createSummaryRebuilder(summaryStore, model, jobs, log);
+      const rebuilder =
+        summaryStore === null
+          ? undefined
+          : createSummaryRebuilder(summaryStore, summarizeModel, jobs, log, undefined, (id) => opened.dataVersion(id));
       const rebuildHook =
         rebuilder === undefined ? undefined : (petId: string, at: number) => rebuilder.rebuild(petId, at);
       // 每日预算是全局的，取第一个条目的配置（越界写坏时 warn 一次）
       const firstEntry = Object.values(readAllConfig(configPaths))[0] ?? {};
       scheduler = createExtractionScheduler({
         dailyMaxRuns: extractDailyRunsOf(firstEntry, warnConfigOnce),
+        // 交给节拍器的是事件存储本体：它既有 listAfter（取未处理片段），也有 dataVersion
+        // （删除计数）——后者让「作废在途抽取」成立：任务创建时记下的版本，落库前若被删除推进，
+        // 这一批就整批丢弃、水位不前进，等下次重试绕开已删内容
         events: opened,
         jobs,
-        extractor: createFactExtractor(facts, model, log, summaryStore ?? undefined),
+        extractor: createFactExtractor(facts, extractModel, log, summaryStore ?? undefined, (id) =>
+          opened.dataVersion(id),
+        ),
         pets: () =>
           flattenPetList(readAllConfig(configPaths))
             .map((pet) => String(pet.id ?? ''))
@@ -525,9 +552,12 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
             log.info(
               `[dsh-pet][soul] 删除记忆 pet=${petId} removed=${removed}` +
                 (detached > 0 ? ` 派生事实来源 ${detached} 条` : '') +
-                (dirtied > 0 ? ` 摘要退出 ${dirtied} 条` : ''),
+                (dirtied > 0 ? ` 摘要退出 ${dirtied} 条` : '') +
+                ' 清理范围=运行系统不可见（磁盘 WAL/备份未清理）',
             );
-            return removed;
+            // cleanup 永远是 system-invisible：本操作只软删除，不会去动磁盘上的 WAL / 备份；
+            // 要彻底清除得走备份轮转或手动 VACUUM，那是一条独立路径。UI 据此如实区分两层
+            return { removed, detached, dirtied, cleanup: 'system-invisible' as const };
           },
     // 事实可见化：面板里看到的就是提示词会用的事实（同一个库、同一条 active 过滤）
     listFacts:
@@ -587,6 +617,8 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     deleteOrphans: async () => ({ ok: true as const, pets: 0, messages: 0 }),
     // 后台维护入口：宿主定时器驱动；库不可用时没有这个入口
     maintenance: scheduler === null ? undefined : { tick: (now?: number) => scheduler!.tick(now) },
+    // 模型调用用量：人格加载成功（网关已包装）时才有；否则不提供
+    usage: usageTracker === null ? undefined : () => usageTracker!.snapshot(),
     getActivePetId: () => activePetId,
     setActivePetId: (id: string) => {
       activePetId = id;

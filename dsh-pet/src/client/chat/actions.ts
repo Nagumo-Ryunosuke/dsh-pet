@@ -15,6 +15,7 @@ import {
   fetchFacts,
   fetchMemories,
   fetchSummaries,
+  fetchUsage,
   sendMessage,
   type DeleteResult,
 } from './api.ts';
@@ -196,7 +197,7 @@ export function createShellActions(deps: ShellDeps): {
   return {
     clearOrphans,
     ask: (kind: ConfirmKind) => ports.patch({ pending: kind }),
-    cancelAsk: () => ports.patch({ pending: null, pendingMemoryId: null, pendingFactId: null }),
+    cancelAsk: () => ports.patch({ pending: null, pendingMemoryId: null, pendingFactId: null, forgetNote: '' }),
     confirmAsk,
     showOlder,
   };
@@ -235,14 +236,16 @@ export function createMemoryActions(ports: ActionPorts): {
     ports.patch({ memoryLoading: true });
     try {
       // 事实层单独兜底：旧版后端没有 /facts 时，记忆列表照常可用，只是事实段为空
-      const [items, facts, summaries] = await Promise.all([
+      const [items, facts, summaries, usage] = await Promise.all([
         fetchMemories(data.petId, query),
         fetchFacts(data.petId).catch(() => []),
         // 摘要单独兜底：旧后端没有 /summaries 时，事实与记忆照常显示
         fetchSummaries(data.petId).catch(() => []),
+        // 用量单独兜底：旧后端没有 /usage 时只是不显示调用记录段，别把整次刷新拖下水
+        fetchUsage().catch(() => null),
       ]);
       if (token !== searchToken) return; // 已被更新的请求取代，丢掉这份结果
-      ports.patch({ memories: items, facts, summaries });
+      ports.patch({ memories: items, facts, summaries, usage });
     } catch (error) {
       if (token !== searchToken) return;
       ports.fail(error);
@@ -266,7 +269,7 @@ export function createMemoryActions(ports: ActionPorts): {
     },
     // 删除也走确认条：与清空历史同一待遇。「她再也不会提起」是用户可见的变化，
     // 误触一下就少一件她记得的事，不该省这一次确认
-    deleteMemory: (id: string): void => ports.patch({ pending: 'forget-memory', pendingMemoryId: id }),
+    deleteMemory: (id: string): void => ports.patch({ pending: 'forget-memory', pendingMemoryId: id, forgetNote: '' }),
     forgetConfirmed: (id: string): void => {
       void (async () => {
         const data = ports.read();
@@ -276,6 +279,13 @@ export function createMemoryActions(ports: ActionPorts): {
             ports.fail(result.message);
             return;
           }
+          // 把「清到了哪一层」如实告诉用户：运行系统已不可见，但磁盘备份/WAL 未必清掉——
+          // 别让他以为删了就等于从磁盘彻底消失
+          const note =
+            result.cleanup === 'purged'
+              ? `已从运行系统与磁盘备份中清除 ${result.removed} 条。`
+              : `已从运行系统移除 ${result.removed} 条（她不会再提起）；磁盘上的备份 / WAL 可能仍保留，直到备份轮转或手动清理。`;
+          ports.patch({ forgetNote: note });
           await refresh(data.memoryQuery);
         } catch (error) {
           ports.fail(error);

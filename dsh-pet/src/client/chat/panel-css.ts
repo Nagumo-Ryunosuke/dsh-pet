@@ -538,6 +538,16 @@ export const PANEL_CSS = `
   font: var(--dsw-font-xxs-12);
 }
 
+.pet-chat-memory-note {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--dsw-alias-state-info-secondary, rgba(120, 170, 255, 0.12));
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxs-12);
+  line-height: 1.5;
+}
+
 .pet-chat-composer {
   flex: 0 0 auto;
   display: flex;

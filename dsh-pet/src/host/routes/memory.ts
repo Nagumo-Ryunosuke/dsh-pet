@@ -95,8 +95,8 @@ export async function handleMemoryRoutes(deps: PetRouteDeps, input: RouteInput):
       if (ids === null) {
         return failResult('bad-request', `id 必须是非空字符串，一次最多 ${MAX_DELETE_IDS} 个`);
       }
-      const removed = await deps.deleteMemories(who.petId, ids);
-      return okResult({ ok: true, removed });
+      const result = await deps.deleteMemories(who.petId, ids);
+      return okResult({ ok: true, ...result });
     }
 
     const limit = parseLimit(url.searchParams.get('limit'));

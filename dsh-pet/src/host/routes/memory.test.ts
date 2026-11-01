@@ -39,7 +39,7 @@ function makeDeps(overrides: Partial<PetRouteDeps> = {}): {
     },
     deleteMemories: async (petId: string, ids: readonly string[]) => {
       deleted.push({ petId, ids });
-      return ids.length;
+      return { removed: ids.length, detached: 0, dirtied: 0, cleanup: 'system-invisible' as const };
     },
     ...overrides,
   } as unknown as PetRouteDeps;

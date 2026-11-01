@@ -11,6 +11,7 @@ import type {
   ChatRound,
   FactItemView,
   MemoryItemView,
+  ModelUsageView,
   OrphanHistory,
   SummaryItemView,
 } from './api.ts';
@@ -67,6 +68,10 @@ export interface PanelData {
   readonly pendingMemoryId: string | null;
   /** 待确认「这条不对」的那条事实 id；null = 没有待确认的。 */
   readonly pendingFactId: string | null;
+  /** 「忘掉一条记忆」之后的清理说明（运行系统已不可见 vs 磁盘备份未清理）；空 = 没有。 */
+  readonly forgetNote: string;
+  /** 模型调用用量（按用途分桶的次数）；后端不提供或还没取到时为 null。 */
+  readonly usage: ModelUsageView | null;
   /** 正在点播的那一轮与阶段；null = 没有在播。同一时刻只播一条。 */
   readonly speaking: { readonly ts: number; readonly phase: 'loading' | 'playing' | 'failed' } | null;
 }
