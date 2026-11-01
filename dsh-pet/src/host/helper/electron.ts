@@ -22,6 +22,25 @@ export const packageRoot = PACKAGE_ROOT;
 /** 默认的 Helper 入口（runtime/electron-helper/main.js）。 */
 export const defaultHelperMain = resolve(packageRoot, 'runtime', 'electron-helper', 'main.js');
 
+/**
+ * 桌面渲染核心的路径（`shared-core.js`）。
+ *
+ * 它由 `npm run build:desktop-core` 生成、**被 .gitignore 忽略**，是 `index.html` 里第一个
+ * 加载的脚本（`window.PetShared`）。缺了它，后面的 renderer 全部抛错，窗口会正常创建却全透明：
+ * `GET /pose` 永远回 `pose-unavailable`，用户看到的是「没有宠物」而不是「少了个文件」。
+ *
+ * @param helperDir - Helper 目录（默认是 `runtime/electron-helper`）。
+ * @returns 渲染核心的绝对路径。
+ */
+export function desktopCorePath(helperDir: string = dirname(defaultHelperMain)): string {
+  return join(helperDir, 'shared-core.js');
+}
+
+/** 桌面渲染核心是否就位；调用方据此决定要不要建窗口。 */
+export function desktopCoreReady(helperDir?: string): boolean {
+  return existsSync(desktopCorePath(helperDir));
+}
+
 /** 桌面 Helper 的远程调试端口：0 = 不开。排障时本地改成 9222，重启 Helper 后用 chrome://inspect 连。 */
 export const DESKTOP_DEBUG_PORT = 0;
 

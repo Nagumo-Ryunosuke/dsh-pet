@@ -5,8 +5,11 @@
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { DESKTOP_DEBUG_PORT, helperLaunchArgs } from './electron.ts';
+import { DESKTOP_DEBUG_PORT, desktopCorePath, desktopCoreReady, helperLaunchArgs } from './electron.ts';
 
 describe('helperLaunchArgs —— 桌面 Helper 启动参数', () => {
   test('端口 0：只有脚本路径，不挂调试开关', () => {
@@ -21,5 +24,22 @@ describe('helperLaunchArgs —— 桌面 Helper 启动参数', () => {
     const expected =
       DESKTOP_DEBUG_PORT > 0 ? ['--remote-debugging-port=' + DESKTOP_DEBUG_PORT, '/x/main.js'] : ['/x/main.js'];
     assert.deepEqual(helperLaunchArgs('/x/main.js'), expected);
+  });
+});
+
+describe('桌面渲染核心就位检查', () => {
+  test('路径固定落在 helper 目录下的 shared-core.js', () => {
+    assert.equal(desktopCorePath('/x/y'), join('/x/y', 'shared-core.js'));
+  });
+
+  test('文件在就是就位，不在就不是（缺文件时调用方不建窗）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'core-check-'));
+    try {
+      assert.equal(desktopCoreReady(dir), false, '空目录 = 没构建过');
+      writeFileSync(join(dir, 'shared-core.js'), 'var PetShared = {};', 'utf8');
+      assert.equal(desktopCoreReady(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -8,6 +8,7 @@
 import { join } from 'node:path';
 import { ROUTE_SEGMENT } from '../../../shared/constants.ts';
 import { PACKAGE_ROOT } from '../../paths.ts';
+import { desktopCoreReady } from '../../helper/electron.ts';
 import type { DesktopHelperDeps } from './types.ts';
 import type { DesktopPets } from './pets.ts';
 import { toBridgeResponse } from './bridge-response.ts';
@@ -67,6 +68,8 @@ export function createDesktopSpawn(deps: DesktopSpawnInput) {
   let displayWarned = false;
 
   let noDesktopSkipped = false;
+  /** 缺渲染核心只报一次：每拍重启都刷一遍会把真正的问题埋掉。 */
+  let coreMissingLogged = false;
 
   let portWaitAttempts = 0;
 
@@ -150,6 +153,19 @@ export function createDesktopSpawn(deps: DesktopSpawnInput) {
   const startHelper = (): void => {
     if (inProcessHost) return; // 应用模式：不探测、不下载 Electron
     if (helper || electronEnsure || disposed) return;
+    // 渲染核心缺失时**不建窗口**：窗口会照常出现但全透明（index.html 的第一个脚本就 404），
+    // 用户看到的是「没有宠物」、`/pose` 回 pose-unavailable，排查方向会被带偏。
+    // 直接说清楚缺什么、怎么补，比造一个幽灵窗口有用。
+    if (!desktopCoreReady()) {
+      if (!coreMissingLogged) {
+        coreMissingLogged = true;
+        log.error(
+          '[dsh-pet] 桌面渲染核心缺失（runtime/electron-helper/shared-core.js）：桌面宠物不会显示。' +
+            '它是 `npm run build:desktop-core` 的产物且被 gitignore——执行 `npm run build` 后重新同步安装目录。',
+        );
+      }
+      return;
+    }
     if (!getHasDesktopPet() && !(desktopModeEverActive && getTrayOn())) {
       // 诊断日志（issue #168）：这条短路不打日志，就是「桌面模式凭空消失：无进程、无目录、无提示」
       // 的直接成因。用 info 而非 warn——纯网页用户这是正常状态；只打一次避免刷屏。
