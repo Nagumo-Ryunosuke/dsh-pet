@@ -53,18 +53,21 @@ export function createHistoryActions(ports: ActionPorts): {
   deleteSelected: () => void;
   clearAll: () => void;
 } {
-  /** 跑一次删除：失败只报错；成功后清勾选并以服务端为准重读。 */
-  const apply = async (run: () => Promise<DeleteResult>): Promise<void> => {
+  /** 跑一次删除：失败只报错；成功后清勾选并以服务端为准重读。
+   *  回执只属于发出它的那只宠物——换宠后旧回执不能清掉新面板的勾选/错误态。 */
+  const apply = async (petId: string, run: () => Promise<DeleteResult>): Promise<void> => {
+    const stillMine = (): boolean => ports.read().petId === petId;
     try {
       const result = await run();
+      if (!stillMine()) return;
       if (!result.ok) {
         ports.fail(result.message);
         return;
       }
       ports.patch({ selected: [], error: '' });
-      await ports.reload(ports.read().petId);
+      await ports.reload(petId);
     } catch (error) {
-      ports.fail(error);
+      if (stillMine()) ports.fail(error);
     }
   };
 
@@ -72,12 +75,12 @@ export function createHistoryActions(ports: ActionPorts): {
     deleteSelected: (): void => {
       const { petId, selected } = ports.read();
       if (petId === '' || selected.length === 0) return;
-      void apply(() => deleteRounds(petId, selected));
+      void apply(petId, () => deleteRounds(petId, selected));
     },
     clearAll: (): void => {
       const { petId } = ports.read();
       if (petId === '') return;
-      void apply(() => clearHistory(petId));
+      void apply(petId, () => clearHistory(petId));
     },
   };
 }
@@ -97,6 +100,8 @@ export function createSendActions(ports: ActionPorts): {
       const requestId = data.requestId ?? newRequestId();
       ports.patch(data.requestId === null ? { busy: true, error: '', requestId } : { busy: true, error: '' });
       void (async () => {
+        // 回执只属于发出它的那只宠物：换宠后旧回复不能清掉用户正在给另一只打的草稿
+        const stillMine = (): boolean => ports.read().petId === data.petId;
         try {
           const attachment =
             data.attachment === undefined
@@ -105,16 +110,17 @@ export function createSendActions(ports: ActionPorts): {
           const result = await sendMessage(data.petId, text, attachment, requestId);
           if (!result.ok) {
             // 失败时保留 requestId：不清空，用户重按发送才是「重试同一件事」
-            ports.fail(result.message);
+            if (stillMine()) ports.fail(result.message);
             return;
           }
           // 这一句已经落地，键的任务结束：下一句是另一件事
-          ports.patch({ draft: '', attachment: undefined, requestId: null });
-          await ports.reload(data.petId);
+          if (stillMine()) ports.patch({ draft: '', attachment: undefined, requestId: null });
+          if (stillMine()) await ports.reload(data.petId);
         } catch (error) {
-          ports.fail(error);
+          if (stillMine()) ports.fail(error);
         } finally {
-          ports.patch({ busy: false });
+          // busy 由 pickPet 换宠时复位；这里只在「还是那只」时收尾，不动新面板的状态
+          if (stillMine()) ports.patch({ busy: false });
         }
       })();
     },
@@ -160,6 +166,11 @@ export function createShellActions(deps: ShellDeps): {
         const result = await clearOrphansApi();
         if (!result.ok) {
           ports.fail(result.message);
+          return;
+        }
+        // 逐只失败必须说清楚并保留列表：清空了就再也选不中它重试，「清理完成」也是假的
+        if (result.failed > 0) {
+          ports.patch({ error: `还有 ${result.failed} 只没清掉，请重试` });
           return;
         }
         ports.patch({ orphans: [], error: '' });
@@ -209,9 +220,14 @@ export function createShellActions(deps: ShellDeps): {
  * 删除是软删除（退出检索、原文留痕），删完重取而不是本地移除——条数以服务端为准。
  * 事实与聊天原文分开取：前者是「知道」，后者是「说过」。
  * @param ports - 动作端口。
+ * @param seq - 取数次序号的**持久宿主**：动作对象每次渲染都会重建，闭包里的计数器会跟着
+ *   重置，乱序保护就失效了；调用方用 ref 持有它，重建多少次都指同一个计数器。
  * @returns 记忆卷帘的动作。
  */
-export function createMemoryActions(ports: ActionPorts): {
+export function createMemoryActions(
+  ports: ActionPorts,
+  seq: { token: number } = { token: 0 },
+): {
   toggleMemory: () => void;
   setMemoryQuery: (query: string) => void;
   searchMemories: (query: string) => void;
@@ -220,37 +236,32 @@ export function createMemoryActions(ports: ActionPorts): {
   correctFact: (id: string) => void;
   correctFactConfirmed: (id: string) => void;
 } {
-  /**
-   * 取数次序号：只有最新一次请求能写状态。
-   *
-   * 检索是用户手触发的，两次请求的完成顺序不保证——慢的旧响应后到，会把新结果
-   * 覆盖成旧结果，用户看到的就是「搜 A 出现了 B 的结果」。
-   */
-  let searchToken = 0;
-
   /** 按当前检索词取一次数；失败只落在 error 上，已列出的条目不动。 */
   const refresh = async (query: string): Promise<void> => {
-    const token = ++searchToken;
+    const token = ++seq.token;
     const data = ports.read();
     if (data.petId === '') return;
+    const requestPetId = data.petId;
     ports.patch({ memoryLoading: true });
     try {
       // 事实层单独兜底：旧版后端没有 /facts 时，记忆列表照常可用，只是事实段为空
       const [items, facts, summaries, usage] = await Promise.all([
-        fetchMemories(data.petId, query),
-        fetchFacts(data.petId).catch(() => []),
+        fetchMemories(requestPetId, query),
+        fetchFacts(requestPetId).catch(() => []),
         // 摘要单独兜底：旧后端没有 /summaries 时，事实与记忆照常显示
-        fetchSummaries(data.petId).catch(() => []),
+        fetchSummaries(requestPetId).catch(() => []),
         // 用量单独兜底：旧后端没有 /usage 时只是不显示调用记录段，别把整次刷新拖下水
         fetchUsage().catch(() => null),
       ]);
-      if (token !== searchToken) return; // 已被更新的请求取代，丢掉这份结果
+      // 双保险：序号变了（更新请求已发出）或宠物换了，这份结果都不能再写进面板——
+      // 否则切换宠物后，旧宠物的慢响应会把另一只的记忆写到现在这只的卷帘里
+      if (token !== seq.token || ports.read().petId !== requestPetId) return;
       ports.patch({ memories: items, facts, summaries, usage });
     } catch (error) {
-      if (token !== searchToken) return;
+      if (token !== seq.token || ports.read().petId !== requestPetId) return;
       ports.fail(error);
     } finally {
-      if (token === searchToken) ports.patch({ memoryLoading: false });
+      if (token === seq.token && ports.read().petId === requestPetId) ports.patch({ memoryLoading: false });
     }
   };
 
@@ -273,8 +284,13 @@ export function createMemoryActions(ports: ActionPorts): {
     forgetConfirmed: (id: string): void => {
       void (async () => {
         const data = ports.read();
+        const requestPetId = data.petId;
+        // 回执只属于发出它的那只宠物：换宠后不能写提示、不能按旧检索词刷新新面板，
+        // 更不能清掉新面板自己的待确认状态
+        const stillMine = (): boolean => ports.read().petId === requestPetId;
         try {
-          const result = await deleteMemoriesById(data.petId, [id]);
+          const result = await deleteMemoriesById(requestPetId, [id]);
+          if (!stillMine()) return;
           if (!result.ok) {
             ports.fail(result.message);
             return;
@@ -282,15 +298,23 @@ export function createMemoryActions(ports: ActionPorts): {
           // 把「清到了哪一层」如实告诉用户：运行系统已不可见，但磁盘备份/WAL 未必清掉——
           // 别让他以为删了就等于从磁盘彻底消失
           const note =
-            result.cleanup === 'purged'
-              ? `已从运行系统与磁盘备份中清除 ${result.removed} 条。`
-              : `已从运行系统移除 ${result.removed} 条（她不会再提起）；磁盘上的备份 / WAL 可能仍保留，直到备份轮转或手动清理。`;
+            result.removed === 0
+              ? '没有需要删除的内容（可能已被删除过）。'
+              : result.cleanup === 'purged'
+                ? `已从运行系统与磁盘备份中清除 ${result.removed} 条。`
+                : // 「这一轮已从聊天里消失」只在真的删到聊天轮时说：非对话事件没有聊天轮可删
+                  `已从运行系统移除 ${result.removed} 条（她不会再提起${
+                    (result.turnsRemoved ?? 0) > 0 ? '，这一轮已从聊天里消失' : ''
+                  }）；原文仍保留在主数据库（只是不再参与检索），磁盘上的备份 / WAL 也可能仍保留，要彻底抹除需手动清理。`;
           ports.patch({ forgetNote: note });
           await refresh(data.memoryQuery);
+          // 后端把这一轮的聊天原文也删了：聊天视图必须跟着刷新，否则这轮还留在屏幕上、
+          // 重新打开才消失——前后不一致会让用户以为删除失败了
+          await ports.reload(requestPetId);
         } catch (error) {
-          ports.fail(error);
+          if (stillMine()) ports.fail(error);
         } finally {
-          ports.patch({ pendingMemoryId: null });
+          if (stillMine()) ports.patch({ pendingMemoryId: null });
         }
       })();
     },
@@ -299,17 +323,21 @@ export function createMemoryActions(ports: ActionPorts): {
     correctFactConfirmed: (id: string): void => {
       void (async () => {
         const data = ports.read();
+        const requestPetId = data.petId;
+        // 与「忘掉」同一口径：换宠后的旧回执不动新面板
+        const stillMine = (): boolean => ports.read().petId === requestPetId;
         try {
-          const result = await correctFactsById(data.petId, [id]);
+          const result = await correctFactsById(requestPetId, [id]);
+          if (!stillMine()) return;
           if (!result.ok) {
             ports.fail(result.message);
             return;
           }
           await refresh(data.memoryQuery);
         } catch (error) {
-          ports.fail(error);
+          if (stillMine()) ports.fail(error);
         } finally {
-          ports.patch({ pendingFactId: null });
+          if (stillMine()) ports.patch({ pendingFactId: null });
         }
       })();
     },

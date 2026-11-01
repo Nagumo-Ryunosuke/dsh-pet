@@ -31,11 +31,19 @@ function publicRead(req: IncomingMessage): boolean {
   const path = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
   if (['/standalone-ai/settings', '/shutdown'].includes(path)) return false;
-  if (/^\/dsh-pet-\d+\/(?:whisper|chat)(?:\/|$)/.test(path)) return false;
-  return (
-    ['/', '/health', '/standalone-ai/', '/standalone-ai/settings.js', '/standalone-ai/settings.css'].includes(path) ||
-    /^\/dsh-pet-\d+\//.test(path)
-  );
+  if (['/', '/health', '/standalone-ai/', '/standalone-ai/settings.js', '/standalone-ai/settings.css'].includes(path)) {
+    return true;
+  }
+  // 插件路由只公开**打包随附的静态素材**（动画缩略图 / 表情 / 音效 / 字体 / logo）、
+  // 渲染端引导要读的 config，以及第三方集成读的 pose 快照（坐标/动作，无对话内容）。
+  // 注意：/config 含用户手写的 whisperPrompt 等人设文本——它公开是渲染端引导的产品取舍
+  // （渲染端由 desktop-auth 注令牌，收进令牌内亦可行），不是「不含用户生成内容」。
+  // 聊天原文、记忆、事实、摘要、用量、state（say.text=模型回复原文）、附件一律要令牌。
+  //
+  // config 只放行精确的 /config：/config/meta 会吐 homedir、日志/待办文件路径、插件根
+  // 等文件系统布局，收进令牌内。
+  if (/^\/dsh-pet-\d+\/config$/.test(path)) return true;
+  return /^\/dsh-pet-\d+\/(?:thumb|pic|sound|fonts?|logo|pose)(?:\/|$)/.test(path);
 }
 
 /** 创建请求安全门面。 */

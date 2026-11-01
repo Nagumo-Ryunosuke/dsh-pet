@@ -60,8 +60,21 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
 
   return function usePetChatState(): ChatPanelState {
     const [data, setData] = useState<PanelData>(INITIAL);
+    /**
+     * 「此刻」的状态镜像：ports.read() 必须读到当前值，而不是发起请求那一渲染的快照。
+     * 否则异步续体（取数回来时）读到的是旧状态——换宠后的旧响应能骗过 petId 校验。
+     */
+    const dataRef = useRef(data);
+    dataRef.current = data;
     const listRef = useRef<HTMLDivElement | null>(null);
     const draftRef = useRef<HTMLTextAreaElement | null>(null);
+    /**
+     * 记忆检索的取数次序号：必须放在 ref 里持久持有。
+     *
+     * 动作对象每次渲染都会重建，闭包里的计数器跟着重置——「慢的旧响应不覆盖新结果」
+     * 的乱序保护就会失效。ref 让重建多少次都指同一个计数器。
+     */
+    const searchSeq = useRef({ token: 0 });
     /** 已贴到底的那条消息（`ts`）：只有它变化时才自动滚到底。 */
     const newestTs = useRef(0);
 
@@ -72,17 +85,21 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
     const reload = async (petId: string): Promise<void> => {
       if (petId === '') return;
       try {
-        patch({ messages: await fetchHistory(petId) });
+        const messages = await fetchHistory(petId);
+        // 换宠后的旧响应不算数（与记忆取数同一口径）
+        if (dataRef.current.petId !== petId) return;
+        patch({ messages });
       } catch (error) {
+        if (dataRef.current.petId !== petId) return;
         fail(error);
       }
     };
 
     useChatEffects({ data, patch, fail, reload, listRef, draftRef, newestTs });
 
-    const ports = { read: () => data, patch, fail, reload };
+    const ports = { read: () => dataRef.current, patch, fail, reload };
     const history = createHistoryActions(ports);
-    const memory = createMemoryActions(ports);
+    const memory = createMemoryActions(ports, searchSeq.current);
     const shell = createShellActions({ ports, history, memory, listRef, pageRounds: PAGE_ROUNDS });
     const pet = data.pets.find((one) => one.id === data.petId);
     const allRounds = groupRounds(data.messages);
@@ -107,6 +124,8 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
       listRef,
       draftRef,
       pickPet: (petId: string) => {
+        // 换宠 = 作废在途的记忆取数：旧宠物的慢响应不能写进另一只的卷帘（序号推进后被丢弃）
+        searchSeq.current.token += 1;
         patch({
           petId,
           messages: [],
@@ -115,6 +134,8 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
           pending: null,
           visibleRounds: PAGE_ROUNDS,
           error: '',
+          // 旧宠物在途发送的忙碌锁不该挡住新面板；发送回执另有 petId 守卫，不会写进来
+          busy: false,
           // 换宠 = 换记忆：卷帘收起并清空，展开时会按新宠物重新取。
           // 下面这组是「按宠物分的数据」的全部字段——新增一类记忆，记得也在这里清掉，
           // 否则新宠物的卷帘会显示上一只的内容（摘要就漏过一次）

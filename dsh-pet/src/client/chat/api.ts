@@ -330,11 +330,19 @@ export async function fetchOrphans(): Promise<OrphanHistory[]> {
  * @throws 网络中断时。
  */
 export async function clearOrphans(): Promise<
-  { ok: true; pets: number; messages: number } | { ok: false; message: string }
+  { ok: true; pets: number; messages: number; failed: number } | { ok: false; message: string }
 > {
   const res = await fetch(ROUTE_PATH + '/chat/memory', { method: 'DELETE' });
   const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-  if (body?.ok === true) return { ok: true, pets: Number(body.pets ?? 0), messages: Number(body.messages ?? 0) };
+  if (body?.ok === true) {
+    return {
+      ok: true,
+      pets: Number(body.pets ?? 0),
+      messages: Number(body.messages ?? 0),
+      // 逐只失败计数：丢了它，「清理完成」就是假的——没清掉的下回又出现在列表里
+      failed: Number(body.failed ?? 0),
+    };
+  }
   return { ok: false, message: typeof body?.message === 'string' ? body.message : 'HTTP ' + res.status };
 }
 
@@ -399,6 +407,8 @@ export type MemoryDeleteResult =
       readonly detached: number;
       /** 因来源被删而退出检索的摘要条数。 */
       readonly dirtied: number;
+      /** 连带退出模型上下文的聊天轮数；0 = 聊天视图无变化。 */
+      readonly turnsRemoved?: number;
       /**
        * 清理范围：
        * - `system-invisible`：运行系统已不可见，但磁盘 WAL / 备份可能仍保留；
@@ -427,6 +437,7 @@ export async function deleteMemoriesById(petId: string, ids: readonly string[]):
       removed: Number(body.removed ?? 0),
       detached: Number(body.detached ?? 0),
       dirtied: Number(body.dirtied ?? 0),
+      turnsRemoved: Number(body.turnsRemoved ?? 0),
       cleanup: body.cleanup === 'purged' ? 'purged' : 'system-invisible',
     };
   }

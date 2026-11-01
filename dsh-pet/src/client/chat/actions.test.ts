@@ -66,7 +66,7 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
 }
 
-/** 桩 fetch：按序回放 memory 响应，facts 单独走自己的队列（默认空），互不吃对方的响应。 */
+/** 桩 fetch：按序回放 memory 响应，facts / summaries / usage 各走兜底（默认空），互不吃对方的响应。 */
 function stubFetch(
   responses: unknown[],
   factsResponses: unknown[] = [],
@@ -92,6 +92,11 @@ function stubFetch(
       };
       factsIndex += 1;
       return new Response(JSON.stringify(payload), { status: 200 });
+    }
+    // 一次 refresh 会并行取 memory + facts + summaries + usage：后两者只兜底、不占主队列，
+    // 主队列只排「记忆列表 / DELETE / 历史」这些被断言的请求
+    if (href.includes('/summaries') || href.includes('/usage')) {
+      return new Response(JSON.stringify({ ok: true, summaries: [], usage: null }), { status: 200 });
     }
     const payload = responses[Math.min(index, responses.length - 1)];
     index += 1;
@@ -254,7 +259,7 @@ describe('记忆卷帘的动作', () => {
           { id: 'e2', occurredAt: 2000, role: 'user', text: '新' },
         ],
       },
-      { ok: true, removed: 1 },
+      { ok: true, removed: 1, detached: 0, dirtied: 0, turnsRemoved: 1, cleanup: 'system-invisible' },
       { ok: true, events: [{ id: 'e2', occurredAt: 2000, role: 'user', text: '新' }] },
     ]);
     const { ports, box } = makePorts(memoryPanel());
@@ -274,6 +279,8 @@ describe('记忆卷帘的动作', () => {
       assert.equal(box.state.memories.length, 1, '以服务端重取的结果为准');
       assert.equal(box.state.memories[0]?.id, 'e2');
       assert.equal(box.state.pendingMemoryId, null, '执行完清掉待办');
+      assert.equal(box.reloads, 1, '聊天视图要跟着刷新——后端把这一轮删了，界面上不能还留着');
+      assert.match(box.state.forgetNote, /这一轮已从聊天里消失/, '说明文案要把删整轮说清楚');
     } finally {
       captured.restore();
     }
@@ -382,6 +389,71 @@ describe('记忆卷帘的动作', () => {
     }
   });
 
+  test('换宠物后，旧宠物的慢响应不能再写进当前面板', async () => {
+    const original = globalThis.fetch;
+    const resolvers: ((response: Response) => void)[] = [];
+    globalThis.fetch = ((url: string) => {
+      if (String(url).includes('/facts') || String(url).includes('/summaries') || String(url).includes('/usage')) {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, facts: [], summaries: [] }), { status: 200 }));
+      }
+      return new Promise<Response>((resolve) => {
+        resolvers.push(resolve);
+      });
+    }) as typeof fetch;
+    try {
+      const { ports, box } = makePorts(memoryPanel());
+      const memory = createMemoryActions(ports);
+      memory.searchMemories('旧宠物的词');
+      await settle();
+      // 切换宠物（pickPet 会清空记忆并按新宠物重取；这里只模拟 petId 已变）
+      ports.patch({ petId: 'other' });
+      resolvers[0]?.(
+        new Response(
+          JSON.stringify({ ok: true, events: [{ id: 'old', occurredAt: 1, role: 'user', text: '旧宠物的记忆' }] }),
+          { status: 200 },
+        ),
+      );
+      await settle();
+      assert.equal(box.state.memories.length, 0, '旧宠物的结果不能写进另一只的卷帘');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test('换宠递增序号后旧请求作废：冻结快照也骗不过去', async () => {
+    // 真实 hook 里 read() 读的是发起请求那一渲染的快照（现已修成实时镜像），
+    // 但换宠还有第二道保险：pickPet 递增检索序号。这条钉住序号机制本身
+    const original = globalThis.fetch;
+    const resolvers: ((response: Response) => void)[] = [];
+    globalThis.fetch = ((url: string) => {
+      if (String(url).includes('/facts') || String(url).includes('/summaries') || String(url).includes('/usage')) {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, facts: [], summaries: [] }), { status: 200 }));
+      }
+      return new Promise<Response>((resolve) => {
+        resolvers.push(resolve);
+      });
+    }) as typeof fetch;
+    try {
+      const { ports, box } = makePorts(memoryPanel());
+      const seq = { token: 0 };
+      const memory = createMemoryActions(ports, seq);
+      memory.searchMemories('旧宠物的词');
+      await settle();
+      // state.ts 的 pickPet 在换宠时会做这件事
+      seq.token += 1;
+      resolvers[0]?.(
+        new Response(
+          JSON.stringify({ ok: true, events: [{ id: 'old', occurredAt: 1, role: 'user', text: '旧宠物的记忆' }] }),
+          { status: 200 },
+        ),
+      );
+      await settle();
+      assert.equal(box.state.memories.length, 0, '序号已推进：旧响应必须作废');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   test('后端不提供记忆时报错给用户，而不是静默空列表', async () => {
     const captured = stubFetch([{ ok: false, message: '当前对话后端不提供长期记忆' }]);
     const { ports, box } = makePorts(memoryPanel());
@@ -393,6 +465,73 @@ describe('记忆卷帘的动作', () => {
       assert.match(box.state.error, /不提供/);
     } finally {
       captured.restore();
+    }
+  });
+});
+
+describe('异步回执的宠物归属', () => {
+  /** 与「记忆卷帘」同款的初始面板（helper 在别的 describe 作用域里，这里自带一份）。 */
+  function memPanel(): PanelData {
+    return panel({
+      petId: 'main',
+      memoryOpen: false,
+      memories: [],
+      facts: [],
+      memoryQuery: '',
+      memoryLoading: false,
+      pendingMemoryId: null,
+      pendingFactId: null,
+    });
+  }
+
+  test('换宠后，旧的「忘掉」回执不动新面板', async () => {
+    const original = globalThis.fetch;
+    const resolvers: ((response: Response) => void)[] = [];
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        resolvers.push(resolve);
+      })) as typeof fetch;
+    try {
+      const { ports, box } = makePorts(memPanel());
+      const memory = createMemoryActions(ports);
+      memory.forgetConfirmed('e1');
+      await settle();
+      // 等待时切到 B
+      ports.patch({ petId: 'other', forgetNote: '', pendingMemoryId: null });
+      resolvers[0]?.(
+        new Response(JSON.stringify({ ok: true, removed: 1, detached: 0, dirtied: 0, cleanup: 'system-invisible' }), {
+          status: 200,
+        }),
+      );
+      await settle();
+      assert.equal(box.state.forgetNote, '', '旧回执不能把提示写进新面板');
+      assert.equal(box.reloads, 0, '也不能按旧宠物的词刷新新面板');
+      assert.equal(box.state.petId, 'other');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test('发送期间换宠：旧回复不清掉新宠物的草稿', async () => {
+    const original = globalThis.fetch;
+    const resolvers: ((response: Response) => void)[] = [];
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        resolvers.push(resolve);
+      })) as typeof fetch;
+    try {
+      const { ports, box } = makePorts(panel({ draft: '给 A 的话' }));
+      const actions = createSendActions(ports);
+      actions.send();
+      await settle();
+      // 切到 B 并开始打字（pickPet 会复位 busy）
+      ports.patch({ petId: 'other', draft: 'B 的草稿', busy: false });
+      resolvers[0]?.(new Response(JSON.stringify({ ok: true, text: '好' }), { status: 200 }));
+      await settle();
+      assert.equal(box.state.draft, 'B 的草稿', '旧回复不能清掉正在编辑的草稿');
+      assert.equal(box.reloads, 0);
+    } finally {
+      globalThis.fetch = original;
     }
   });
 });

@@ -71,6 +71,43 @@ test('encoded private routes still require a capability; invalid encodings fail 
   );
 });
 
+test('plugin reads are public only for bundled static assets; everything else needs the capability', () => {
+  const security = createRequestSecurity();
+  // 静态素材（无用户数据）继续公开：<video>/<img> 等媒体元素不走 fetch 拦截的边角情况也不会坏
+  for (const path of [
+    '/dsh-pet-7340/thumb/main/%E7%9C%8B.webm',
+    '/dsh-pet-7340/pic/memes/main/%E8%A1%A8%E6%83%85.png',
+    '/dsh-pet-7340/sound/main/click.mp3',
+    '/dsh-pet-7340/font/main/%E5%AD%97%E4%BD%93.ttf',
+    '/dsh-pet-7340/logo',
+  ]) {
+    assert.equal(security.authorize(request({}, path), response() as unknown as ServerResponse), true, path);
+  }
+  // 其余一律要令牌：聊天原文 / 记忆 / 事实 / 摘要 / 用量 / state / 附件——
+  // 本机其它进程构造请求不应能匿名读走任何用户生成内容（state 的 say.text 就是模型回复原文）。
+  // （config 与 pose 仍公开：渲染端引导依赖 / 第三方集成契约，且不含聊天内容）
+  for (const path of [
+    '/dsh-pet-7340/memory?pet=main',
+    '/dsh-pet-7340/facts?pet=main',
+    '/dsh-pet-7340/summaries?pet=main',
+    '/dsh-pet-7340/usage',
+    '/dsh-pet-7340/state?pet=main',
+    '/dsh-pet-7340/chat?pet=main',
+    '/dsh-pet-7340/config/meta',
+    '/dsh-pet-7340/attachment?id=a1',
+    '/dsh-pet-7340/todos',
+  ]) {
+    const res = response();
+    assert.equal(security.authorize(request({}, path), res as unknown as ServerResponse), false, path);
+    assert.equal(res.status, 403, path);
+    assert.equal(
+      security.authorize(request({ 'x-dsh-pet-token': security.token }, path), response() as unknown as ServerResponse),
+      true,
+      path,
+    );
+  }
+});
+
 test('desktop file-origin exception always needs a capability and never relaxes Host checks', () => {
   const security = createRequestSecurity();
   const fileHeaders = { origin: 'null', 'sec-fetch-site': 'cross-site' };
@@ -169,7 +206,7 @@ test('only minimal health, settings shell and known media GET are public; public
   for (const path of ['/standalone-ai/settings', '/dsh-pet-7340/whisper', '/dsh-pet-7340/chat', '/shutdown']) {
     assert.equal(security.authorize(request({}, path), response() as unknown as ServerResponse), false, path);
   }
-  for (const path of ['/dsh-pet-7340/config', '/dsh-pet-7340/state']) {
+  for (const path of ['/dsh-pet-7340/config', '/dsh-pet-7340/pose']) {
     assert.equal(security.authorize(request({}, path), response() as unknown as ServerResponse), true, path);
     assert.equal(
       security.authorize(request({ origin: 'http://evil.test' }, path), response() as unknown as ServerResponse),
@@ -177,4 +214,10 @@ test('only minimal health, settings shell and known media GET are public; public
       path,
     );
   }
+  // state 含模型回复原文（say.text），必须随 chat/whisper 一样要求令牌
+  assert.equal(
+    security.authorize(request({}, '/dsh-pet-7340/state'), response() as unknown as ServerResponse),
+    false,
+    'state 不能匿名读',
+  );
 });
