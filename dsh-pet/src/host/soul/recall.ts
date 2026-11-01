@@ -22,6 +22,13 @@ import {
 /** 每轮最多注入几条事实（总预算仍是 trimToBudget 的 5 条 / 400 token）。 */
 export const MAX_RECALLED_FACTS = 3;
 /**
+ * 「最近话题」看几轮用户原话。
+ *
+ * 6 轮大约是一段对话的自然长度：再短看不出话题，再长就退化成全量匹配（什么事实都能
+ * 在某段话里找到字面重叠），等于把无关事实挤进提示词。
+ */
+export const RECENT_USER_TURNS = 6;
+/**
  * 每轮最多注入几段摘要。
  *
  * 摘要回答的是「之前聊到哪了」，越近越有用；给两段就够接上话题，再多会把最近的原话挤掉。
@@ -80,6 +87,8 @@ export interface RecallInput {
   readonly facts: readonly Fact[];
   /** 该宠物的 active 摘要（最近的在前）。 */
   readonly summaries?: readonly Summary[];
+  /** 最近几轮的用户原话（正序），用于「最近话题」召回；缺省不启用。 */
+  readonly recentText?: readonly string[];
   /** 聊天原文的召回调；由调用方决定检索实现。 */
   readonly searchEvents: () => readonly MemoryHit[];
   /**
@@ -99,17 +108,63 @@ export interface RecallInput {
  * @param input - 宠物、当前输入、事实候选与原文检索。
  * @returns 已排序、已裁剪的往事列表；事实在前。
  */
+/**
+ * 最近话题里提到过的事实（补「指代/近指」这一小块）。
+ *
+ * 事实与查询的匹配只认字面重叠（值/主语/谓语），于是「那个战队赢了吗」永远召不回
+ * 「用户 支持 IG战队」——用户刚聊过这件事，她却想不起来，看起来就是「存了不记」。
+ *
+ * 这里只做**最小可行的近指**：事实的值或主语出现在最近几轮对话里，就当作话题相关、
+ * 直接召回。不做同义词、不做向量（那是语义检索，代价完全不同），仍然字面、可解释、可测试。
+ *
+ * @param petId - 宠物 id。
+ * @param facts - 候选事实。
+ * @param recentText - 最近几轮的用户原话（按时间正序）。
+ * @param options - `exclude` 排除已被查询命中的事实（不重复注入）。
+ * @returns 召回命中。
+ */
+export function recentFactHits(
+  petId: string,
+  facts: readonly Fact[],
+  recentText: readonly string[],
+  options: { exclude?: ReadonlySet<string> } = {},
+): MemoryHit[] {
+  const window = recentText.join(' ').trim();
+  if (window === '') return [];
+  const exclude = options.exclude ?? new Set<string>();
+  const out: MemoryHit[] = [];
+  for (const fact of facts) {
+    if (exclude.has(fact.id)) continue;
+    // 只认「值」：值是结论（手冲咖啡、IG），主语只是「谁」（用户）——后者人人一样，
+    // 拿它做近指等于「最近说过『用户』两个字」就把所有事实都召回来。
+    // 值本身短于 2 字也不认：单字重叠在中文里到处都是，命中没有意义。
+    const key = fact.value;
+    if (Array.from(key).length < 2) continue;
+    if (!window.includes(key)) continue;
+    out.push(factHit(petId, fact));
+    if (out.length >= MAX_RECALLED_FACTS) break;
+  }
+  return out;
+}
+
 export function recallWithFacts(input: RecallInput): RecalledMemory[] {
-  const factHits = selectFacts(input.query, input.facts, {
+  const picked = selectFacts(input.query, input.facts, {
     maxFacts: input.maxFacts ?? MAX_RECALLED_FACTS,
-  }).map((fact) => factHit(input.petId, fact));
+  });
+  const factHits = picked.map((fact) => factHit(input.petId, fact));
+  // 查询没命中、但最近聊到过的事实：指代（「那个战队」）时唯一的可靠线索
+  const exclude = new Set(picked.map((fact) => fact.id));
+  const recentHits = recentFactHits(input.petId, input.facts, input.recentText ?? [], { exclude }).slice(
+    0,
+    Math.max(0, (input.maxFacts ?? MAX_RECALLED_FACTS) - factHits.length),
+  );
   // 摘要不按关键词筛：它的价值是「接上上次」，与当前这句话是否同词无关；
   // 顺序上排在事实之后、原文之前——事实最确定，原文最具体，梗概居中
   const summaryHits = (input.summaries ?? [])
     .slice(0, MAX_RECALLED_SUMMARIES)
     .map((summary) => summaryHit(input.petId, summary));
   // trimToBudget 保持输入顺序：事实在前，预算不够时先保事实
-  const kept = trimToBudget([...factHits, ...summaryHits, ...input.searchEvents()], input.budget ?? {});
+  const kept = trimToBudget([...factHits, ...recentHits, ...summaryHits, ...input.searchEvents()], input.budget ?? {});
   return kept.map((hit) => ({
     id: hit.event.id,
     occurredAt: hit.event.occurredAt,

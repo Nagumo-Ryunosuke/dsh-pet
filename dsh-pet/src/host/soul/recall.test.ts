@@ -206,3 +206,75 @@ describe('摘要进入召回', () => {
     assert.equal(recalled[0]?.occurredAt, 5000, 'occurredAt 用 periodEnd，供窗口去重判断');
   });
 });
+
+describe('最近话题召回（指代/近指的最小可行版）', () => {
+  test('查询与事实零字面重叠，但最近聊到过 → 仍能召回', () => {
+    const recalled = recallWithFacts({
+      petId: 'main',
+      // 「战队」是查询的二字片段，会经 selectFacts 命中值「IG战队」——这里刻意用值「IG」，
+      // 让查询与事实**真的零重叠**，才能证明召回来自最近话题而不是关键词匹配
+      query: '那个战队昨天赢了吗',
+      facts: [fact('f1', '用户', '支持', 'IG')],
+      recentText: ['我支持IG，昨天看比赛了'],
+      searchEvents: () => [],
+    });
+    assert.equal(recalled.length, 1, '指代句也能想起刚聊过的事');
+    assert.equal(recalled[0]?.id, 'f1');
+  });
+
+  test('最近话题没提过 → 不凭空补全', () => {
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '那个战队昨天赢了吗',
+      facts: [fact('f1', '用户', '支持', 'IG')],
+      recentText: ['今天吃什么好呢'],
+      searchEvents: () => [],
+    });
+    assert.deepEqual(recalled, [], '没有可靠线索就不注入，而不是猜一个');
+  });
+
+  test('查询已命中的事实不重复注入', () => {
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: 'IG最近怎么样',
+      facts: [fact('f1', '用户', '支持', 'IG')],
+      recentText: ['IG'],
+      searchEvents: () => [],
+    });
+    assert.deepEqual(
+      recalled.map((one) => one.id),
+      ['f1'],
+    );
+  });
+
+  test('主语不作为近指依据，值太短也不认', () => {
+    // 「用户」人人都一样，「x」「好」单字到处重叠——都不是可靠的近指线索
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '今天吃什么',
+      facts: [fact('f1', '用户', '是', 'x'), fact('f2', '用户', '喜欢', '好')],
+      recentText: ['用户觉得饿了，好想吃东西'],
+      searchEvents: () => [],
+    });
+    assert.deepEqual(recalled, []);
+  });
+
+  test('查询命中的排在最近话题之前，且两者合计不超上限', () => {
+    const facts = [
+      fact('f1', '用户', '喜欢', '手冲咖啡'),
+      fact('f2', '用户', '支持', 'IG'),
+      fact('f3', '用户', '在弄', '毕设'),
+      fact('f4', '用户', '养', '猫豆豆'),
+    ];
+    const recalled = recallWithFacts({
+      petId: 'main',
+      query: '手冲咖啡',
+      facts,
+      recentText: ['IG', '毕设', '猫豆豆'],
+      searchEvents: () => [],
+      maxFacts: 3,
+    });
+    assert.equal(recalled.length, 3, '总数仍受 maxFacts 约束');
+    assert.equal(recalled[0]?.id, 'f1', '查询命中的排最前');
+  });
+});

@@ -53,6 +53,7 @@ import type { HostContext } from '../plugin/context.ts';
 import type { HostSetup } from '../plugin/setup.ts';
 import type { PetRouteDeps } from '../routes/types.ts';
 import { memoryBudgetOf } from './budget.ts';
+import { RECENT_USER_TURNS } from './recall.ts';
 import { recallWithFacts } from './recall.ts';
 
 /** 指定人格文件的环境变量（不设则用用户数据目录下的 persona.yaml）。 */
@@ -229,6 +230,13 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   let factStore: SqliteFactStore | null = null;
   /** 摘要存储：端点列摘要要用；它和事件/事实共用同一个句柄。 */
   let summaryStoreRef: SqliteSummaryStore | null = null;
+  /**
+   * 最近几轮的用户原话（每只宠物一列，只留最近 N 轮）。
+   *
+   * 召回时给「最近话题」用：查询本身没有字面重叠（「那个战队赢了吗」）时，最近聊到过的
+   * 实体就是唯一的可靠线索。只记正文、不记时刻——它只做子串匹配，不参与排序。
+   */
+  const recentUserText = new Map<string, string[]>();
   /** 事实抽取器/节拍器：库可用时启用，失败只影响记忆整理，不影响说话。 */
   let scheduler: ExtractionScheduler | null = null;
 
@@ -314,6 +322,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
                 facts: facts.list(petId, { limit: 200 }),
                 // 摘要不按关键词筛（它的价值是「接上上次」），只取最近几段
                 summaries: summaryStore === null ? [] : summaryStore.list(petId, { limit: 5 }),
+                recentText: recentUserText.get(petId) ?? [],
                 searchEvents: () => opened.search(petId, query),
                 budget: memoryBudgetOf(entryConfigOf(petId), warnConfigOnce),
               }),
@@ -416,6 +425,12 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
         message: result.message,
       };
     }
+    // 记下这一轮的用户原话，给下一轮召回的「最近话题」用（指代「那个战队」时唯一的线索）。
+    // 只在成功后记：失败的那一轮没进历史，也不该影响下一轮的线索
+    const ring = recentUserText.get(petId) ?? [];
+    ring.push(text.trim());
+    while (ring.length > RECENT_USER_TURNS) ring.shift();
+    recentUserText.set(petId, ring);
     // 与上游同一条展示链路：气泡读的是这个叶子，窗口与气泡必然一致
     state.writePet(petId, 'say', { text: result.text, anim: false });
     // 这一轮事件已经落库，给节拍器一个「累计到 10 条」的即时检查机会；不 await，不拖慢回复

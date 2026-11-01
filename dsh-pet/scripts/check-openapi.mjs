@@ -98,7 +98,10 @@ const routeSources = (dir) =>
 const implemented = new Set();
 for (const file of routeSources(ROUTES_DIR)) {
   const src = readFileSync(file, 'utf8');
-  for (const m of src.matchAll(/rest === '([^']+)'/g)) implemented.add(m[1].split('/')[0]);
+  // 正向分支（`rest === 'chat'`）与反向守卫（`rest !== 'memory'`）都算实现：
+  // 记忆三个端点全用反向守卫，只认 `===` 会让它们整条躲过对齐检查——文档里没有、检查也不报，
+  // 等于「新加的端点默认免检」。
+  for (const m of src.matchAll(/rest (?:===|!==) '([^']+)'/g)) implemented.add(m[1].split('/')[0]);
   // 素材领域既有正向分支，也有反向守卫（`scope !== 'thumb'` 才是 thumb 分支），两种都算。
   for (const m of src.matchAll(/scope (?:===|!==) '([^']+)'/g)) implemented.add(m[1]);
 }

@@ -96,6 +96,10 @@ tags:
     description: 字体、通知图标、表情包、动画素材
   - name: Voice
     description: 语音合成——参数校验、排队与缓存都在宿主，成功时直接返回 mp3 文件
+  - name: Memory
+    description: |
+      长期记忆——聊天原文、提炼出的事实、一段时间的梗概。
+      三者共同的硬约束：用户删掉的内容不再出现在任何一条读路径上。
 
 paths:
   /dsh-pet-7340/state:
@@ -2937,6 +2941,202 @@ paths:
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
 
+  /dsh-pet-7340/memory:
+    get:
+      tags: [Memory]
+      operationId: listMemories
+      summary: 浏览或检索聊天原文记忆
+      description: |
+        不带 `q` = **浏览**：该宠物未删除的聊天事件，最新在前。
+        带 `q` = **检索**：走的就是对话时召回用的同一套排序（≥3 字走 FTS5 trigram 短语；
+        1–2 字走有界短词回退；短语零命中走二元拆分），所以**这里看到的就是她会想起来的**。
+
+        两条实现口径：
+
+        - `via` 只在检索时出现，说明这一条是**怎么被匹配上的**（`fts` / `substring` /
+          `decomposed`）。浏览没有匹配过程，所以不带——界面据此区分「原文命中」与「拆词匹配」，
+          后者可信度本来就低。
+        - 只列未删除的事件。用户删掉的聊天不会再出现在这里，也不会被召回。
+
+        正文**原样返回、不脱敏**：这是本机 127.0.0.1 的接口，调用方本来就是能读到 `soul.db`
+        的进程，脱敏只会让界面显示得和实际注入提示词的内容不一致。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - name: q
+          in: query
+          required: false
+          description: |
+            检索词（trim 后 ≤100 字符）。空串或不给 = 浏览。
+            超长 → `ok: false` + `reason: bad-request`，不会静默截断成一截再查。
+          schema:
+            type: string
+            maxLength: 100
+          example: 手冲咖啡
+        - name: limit
+          in: query
+          required: false
+          description: 最多几条（1–200，默认 50）。非法值 → `bad-request`，且一次都不查库。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 记忆列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryListResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+    delete:
+      tags: [Memory]
+      operationId: deleteMemories
+      summary: 删除若干条记忆（软删除）
+      description: |
+        **软删除**：事件退出检索与召回，正文留痕（打 `deleted_at`），不是物理删除。
+
+        派生数据跟着退——这是本接口唯一的硬承诺：
+
+        - 由这条记忆单独支撑的**事实**撤掉来源；来源撤光就自动 `retracted`，不再参与召回；
+        - 覆盖这条记忆的**摘要**整条转 `dirty`，立刻退出检索（摘要是一段压缩文本，摘不掉
+          其中一句，只能整条下线），之后由维护任务用仍存活的来源重新总结。
+
+        所以「我在面板里删了这句话，她却还记得」不会发生。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - name: id
+          in: query
+          required: true
+          description: |
+            要删除的事件 id，**可重复**（`?id=a&id=b`）。一次 1–100 个。
+            数量越界或含空串 → `bad-request`，一个都不删。
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items:
+              type: string
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: 删除结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryDeleteResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /dsh-pet-7340/facts:
+    get:
+      tags: [Memory]
+      operationId: listFacts
+      summary: 列出她「确定知道的事」
+      description: |
+        只列 `active` 的事实，按更新时间倒序。
+
+        每条带两样东西回答「她怎么知道这个」：
+
+        - `sources`：**仍然存活**的来源条数（已删的不算，哪怕解绑失败过）；
+        - `from`：最新一处来源的正文摘录（≤48 字）。这就是那句原话——置信度没法让用户判断
+          真假，原话可以。
+
+        与之对应：`GET /memory` 列原文、`GET /summaries` 列梗概。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - name: limit
+          in: query
+          required: false
+          description: 最多几条（1–200，默认 100）。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        "200":
+          description: 事实列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FactListResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+    delete:
+      tags: [Memory]
+      operationId: correctFacts
+      summary: 标记「这条不对」（纠正，不是删除）
+      description: |
+        **纠正**语义：`status` 转 `superseded` 并关闭有效区间，事实留痕、不再参与召回。
+
+        为什么不做成删除：用户需要知道「她为什么不再这么认为」；而删除会让下一次抽取从同样的
+        聊天里再提炼出同一条——纠正必须挡得住重学。反过来 `retracted`（证据全没了）**可以**被
+        新对话复活：那是「想不起来」，不是「记错了」。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - name: id
+          in: query
+          required: true
+          description: 要纠正的事实 id，**可重复**。一次 1–50 个。
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            items:
+              type: string
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: 纠正结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FactCorrectResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /dsh-pet-7340/summaries:
+    get:
+      tags: [Memory]
+      operationId: listSummaries
+      summary: 列出「聊过的大概」（一段时间对话的梗概）
+      description: |
+        只列 `active` 的摘要，最近的在前。
+
+        摘要由抽取任务顺带产出，不额外花一次模型调用，覆盖某一批对话。它会随召回注入提示词，
+        因此**只列能进提示词的那些**：
+
+        - 来源被删过一次 → 整条转 `dirty`，从这里消失，也停止召回；之后由维护任务用仍存活的
+          来源重新总结，成功才回到 `active`；
+        - 来源全被删 → `retracted`，不再重建（没什么可总结的）。
+
+        界面据此与召回保持一致：看得见的一定在提示词里，看不见的一定不在。摘要是只读的，
+        没有单条删除——它是一段压缩文本，没有哪一行能单独作废。
+      parameters:
+        - $ref: "#/components/parameters/PetIdQuery"
+        - name: limit
+          in: query
+          required: false
+          description: 最多几条（1–50，默认 10）。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        "200":
+          description: 摘要列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SummaryListResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
 components:
   parameters:
     PetIdQuery:
@@ -4285,4 +4485,146 @@ components:
           type: integer
           description: 删掉的条数；0 = 本来就没有（幂等）
 
+    MemoryItem:
+      type: object
+      required: [id, occurredAt, role, text, kind, source]
+      properties:
+        id:
+          type: string
+          description: 稳定 id（约定的轮次 id 或其它事件来源的 id）。
+        occurredAt:
+          type: integer
+          description: 发生时刻（epoch 毫秒）。
+        role:
+          type: string
+          enum: [user, assistant]
+          description: 说话方。
+        text:
+          type: string
+          description: 正文（原样，未脱敏）。
+        kind:
+          type: string
+          description: 事件种类（`user_message` / `assistant_message` 等）。
+        source:
+          type: string
+          description: 事件来源（`chat` = 用户在桌宠对话里说的）。
+        via:
+          type: string
+          enum: [fts, substring, decomposed]
+          description: |
+            **只在检索时出现**：这一条是怎么匹配上的。浏览（不带 `q`）没有匹配过程，字段缺省。
+      description: |
+        一条聊天原文记忆。`via` 是给界面解释「为什么想起这条」用的，不是检索通道的一条不算。
 
+    MemoryListResponse:
+      type: object
+      required: [ok, events]
+      properties:
+        ok:
+          type: boolean
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryItem"
+        query:
+          type: [string, "null"]
+          description: 本次生效的检索词；浏览时为 `null`。
+
+    MemoryDeleteResponse:
+      type: object
+      required: [ok, removed]
+      properties:
+        ok:
+          type: boolean
+        removed:
+          type: integer
+          description: 实际软删除的条数；0 = 本来就没有（幂等）。
+
+    FactItem:
+      type: object
+      required: [id, subject, predicate, value, confidence, updatedAt, sources]
+      properties:
+        id:
+          type: string
+          description: 稳定 id（按「宠物 + 主语 + 谓语 + 值」确定；重复抽取只更新同一条）。
+        subject:
+          type: string
+          example: 用户
+        predicate:
+          type: string
+          example: 喜欢
+        value:
+          type: string
+          example: 手冲咖啡
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: 模型自报的置信度，只作展示参考，不参与真假判断。
+        updatedAt:
+          type: integer
+          description: 最后更新时刻（epoch 毫秒）。
+        sources:
+          type: integer
+          description: |
+            仍然存活的来源条数。已删除的来源不计入——事实不能引用用户删掉的话。
+        from:
+          type: object
+          description: 最新一处来源的摘录；没有任何可读来源时该字段不出现。
+          required: [text, occurredAt]
+          properties:
+            text:
+              type: string
+              description: 那句原话的摘录（≤48 字）。
+            occurredAt:
+              type: integer
+              description: 那句话的时刻（epoch 毫秒）。
+
+    FactListResponse:
+      type: object
+      required: [ok, facts]
+      properties:
+        ok:
+          type: boolean
+        facts:
+          type: array
+          items:
+            $ref: "#/components/schemas/FactItem"
+
+    FactCorrectResponse:
+      type: object
+      required: [ok, corrected]
+      properties:
+        ok:
+          type: boolean
+        corrected:
+          type: integer
+          description: 实际标记为「不对」的条数；0 = 本来就没有（幂等）。
+
+    SummaryItem:
+      type: object
+      required: [id, periodStart, periodEnd, text]
+      properties:
+        id:
+          type: string
+          description: 稳定 id（宠物 + 覆盖区间的起止时刻，因此同一段时间只有一条）。
+        periodStart:
+          type: integer
+          description: 覆盖范围起点（epoch 毫秒，含）。
+        periodEnd:
+          type: integer
+          description: 覆盖范围终点（epoch 毫秒，含）。召回时用它与上下文窗口去重。
+        text:
+          type: string
+          description: 梗概正文（≤120 字；提示词要求 60 字以内，这是硬上限）。
+
+    SummaryListResponse:
+      type: object
+      required: [ok, summaries]
+      properties:
+        ok:
+          type: boolean
+        summaries:
+          type: array
+          items:
+            $ref: "#/components/schemas/SummaryItem"
