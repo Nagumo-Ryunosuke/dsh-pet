@@ -704,7 +704,8 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
               // 回滚后条目仍在面板里，用户可以直接重试；如实上报，绝不假成功
               const reason = error instanceof Error ? error.message : String(error);
               log.error(`[dsh-pet][soul] 删除记忆失败（已回滚，可重试）pet=${petId}：${reason}`);
-              throw new Error(`删除未完成（未做任何更改），请重试：${reason}`);
+              // 挂上原始异常：报错文案给用户看，cause 给排查看（原始栈不丢）
+              throw new Error(`删除未完成（未做任何更改），请重试：${reason}`, { cause: error });
             }
             // 「最近话题」的召回线索按存活事件重建：删掉的原话不再当线索（自愈式，不怕漂移）
             rebuildRecentText(petId);
