@@ -98,3 +98,24 @@ export function memoryBudgetOf(conf: Record<string, unknown>, warn?: (message: s
 
 /** 配置项的展示名，给文档与日志复用。 */
 export const MEMORY_BUDGET_LABELS = LABELS;
+
+/**
+ * 记忆维护的每日预算（全局默认，非负整数 1–20）。
+ *
+ * 抽取与摘要重建共用这一份：两者都是一次后台模型调用，分开算等于把上限翻倍。
+ * 缺省 4（设计初值）；写坏回落默认并 warn——预算写错不该让宠物开不了口。
+ *
+ * @param conf - 配置（取第一个条目：预算是全局的）。
+ * @param warn - 留痕口子。
+ * @returns 每日上限。
+ */
+export function extractDailyRunsOf(conf: Record<string, unknown>, warn: (message: string) => void): number {
+  const raw = conf['memoryExtractDailyRuns'];
+  if (raw === undefined || raw === null) return 4;
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
+  if (!Number.isInteger(n) || n < 1 || n > 20) {
+    warn(`[dsh-pet][soul] 配置 memoryExtractDailyRuns=${JSON.stringify(raw)} 不可用（应为 1–20 的整数），按 4 处理`);
+    return 4;
+  }
+  return n;
+}

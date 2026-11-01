@@ -8,7 +8,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { memoryBudgetOf } from './budget.ts';
+import { extractDailyRunsOf, memoryBudgetOf } from './budget.ts';
 
 describe('记忆预算配置', () => {
   test('没有配置时用灵魂的默认值', () => {
@@ -68,5 +68,28 @@ describe('记忆预算配置', () => {
     assert.equal(budget.maxTokens, 400);
     assert.equal(budget.maxFacts, 3);
     assert.equal(warnings.length, 3);
+  });
+});
+
+describe('记忆维护的每日预算', () => {
+  const noWarn = (): void => {};
+
+  test('缺省 4（设计初值）；合法值生效', () => {
+    assert.equal(extractDailyRunsOf({}, noWarn), 4);
+    assert.equal(extractDailyRunsOf({ memoryExtractDailyRuns: 8 }, noWarn), 8);
+    assert.equal(extractDailyRunsOf({ memoryExtractDailyRuns: '6' }, noWarn), 6);
+  });
+
+  test('越界或写坏回落默认并留 warn', () => {
+    const warnings: string[] = [];
+    const warn = (m: string): void => {
+      warnings.push(m);
+    };
+    assert.equal(extractDailyRunsOf({ memoryExtractDailyRuns: 0 }, warn), 4);
+    assert.equal(extractDailyRunsOf({ memoryExtractDailyRuns: 21 }, warn), 4);
+    assert.equal(extractDailyRunsOf({ memoryExtractDailyRuns: true }, warn), 4);
+    assert.equal(extractDailyRunsOf({ memoryExtractDailyRuns: 2.5 }, warn), 4);
+    assert.equal(warnings.length, 4);
+    assert.match(warnings[0] ?? '', /memoryExtractDailyRuns/);
   });
 });

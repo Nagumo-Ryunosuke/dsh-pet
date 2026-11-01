@@ -52,7 +52,7 @@ import type { ChatMemory } from '../plugin/chat-memory.ts';
 import type { HostContext } from '../plugin/context.ts';
 import type { HostSetup } from '../plugin/setup.ts';
 import type { PetRouteDeps } from '../routes/types.ts';
-import { memoryBudgetOf } from './budget.ts';
+import { extractDailyRunsOf, memoryBudgetOf } from './budget.ts';
 import { RECENT_USER_TURNS } from './recall.ts';
 import { recallWithFacts } from './recall.ts';
 
@@ -344,7 +344,10 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       const rebuilder = summaryStore === null ? undefined : createSummaryRebuilder(summaryStore, model, jobs, log);
       const rebuildHook =
         rebuilder === undefined ? undefined : (petId: string, at: number) => rebuilder.rebuild(petId, at);
+      // 每日预算是全局的，取第一个条目的配置（越界写坏时 warn 一次）
+      const firstEntry = Object.values(readAllConfig(configPaths))[0] ?? {};
       scheduler = createExtractionScheduler({
+        dailyMaxRuns: extractDailyRunsOf(firstEntry, warnConfigOnce),
         events: opened,
         jobs,
         extractor: createFactExtractor(facts, model, log, summaryStore ?? undefined),
