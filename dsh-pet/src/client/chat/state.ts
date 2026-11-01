@@ -5,6 +5,7 @@
  * 用一个 state 对象装全部字段——切换宠物要同时清空消息与勾选，拆成多个 useState 会露出中间态。
  * @module dsh-pet/src/client/chat/state
  */
+import { isDesktopVisible } from '../../shared/config.ts';
 import { speakText } from '../../shared/voice.ts';
 import { fetchHistory, groupRounds, playAction as requestPlayAction } from './api.ts';
 import { createHistoryActions, createMemoryActions, createSendActions, createShellActions } from './actions.ts';
@@ -115,6 +116,7 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
       hasOlder: allRounds.length > rounds.length,
       petName: pet?.name || '宠',
       assetRoot: pet?.assetRoot ?? '',
+      desktopVisible: isDesktopVisible(pet?.display ?? 'none'),
       memoryRounds: data.roundsByEntry[pet?.assetRoot ?? ''],
       persona: data.personas[data.petId] ?? '',
       togglePersona: () => patch({ personaOpen: !data.personaOpen }),
@@ -123,6 +125,7 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
       closeMemory: () => patch({ memoryOpen: false }),
       listRef,
       draftRef,
+      toggleDisplay: () => shell.toggleDisplay(),
       pickPet: (petId: string) => {
         // 换宠 = 作废在途的记忆取数：旧宠物的慢响应不能写进另一只的卷帘（序号推进后被丢弃）
         searchSeq.current.token += 1;

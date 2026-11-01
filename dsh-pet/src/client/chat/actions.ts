@@ -6,6 +6,7 @@
  * @module dsh-pet/src/client/chat/actions
  */
 import { encodeImageFile } from '../../shared/chat/encode.ts';
+import { toggleDesktopDisplay } from '../../shared/config.ts';
 import {
   clearHistory,
   clearOrphans as clearOrphansApi,
@@ -17,6 +18,7 @@ import {
   fetchSummaries,
   fetchUsage,
   sendMessage,
+  setPetDisplay,
   type DeleteResult,
 } from './api.ts';
 import type { ConfirmKind, PanelData } from './types.ts';
@@ -149,9 +151,10 @@ export interface ShellDeps {
   readonly pageRounds: number;
 }
 
-/** 外壳动作：孤儿清理、确认条分发、「加载更早」。 */
+/** 外壳动作：孤儿清理、显示开关、确认条分发、「加载更早」。 */
 export function createShellActions(deps: ShellDeps): {
   clearOrphans: () => void;
+  toggleDisplay: () => void;
   ask: (kind: ConfirmKind) => void;
   cancelAsk: () => void;
   confirmAsk: () => void;
@@ -174,6 +177,31 @@ export function createShellActions(deps: ShellDeps): {
           return;
         }
         ports.patch({ orphans: [], error: '' });
+      } catch (error) {
+        ports.fail(error);
+      }
+    })();
+  };
+
+  /**
+   * 显示 / 隐藏桌宠：只动桌面那一档，与桌面托盘同一套循环。
+   *
+   * 没有宠物在身上时不发请求（空 id 会被宿主按 pet-required 拒掉）；写盘由宿主负责，
+   * 成功后把面板里的显示档跟上，按钮立刻反映新状态——下次拉 `/config` 以磁盘为准。
+   */
+  const toggleDisplay = (): void => {
+    void (async () => {
+      const { petId, pets } = ports.read();
+      const pet = pets.find((one) => one.id === petId);
+      if (pet === undefined || petId === '') return;
+      try {
+        const result = await setPetDisplay(petId, toggleDesktopDisplay(pet.display));
+        if (!result.ok) {
+          ports.fail(result.message);
+          return;
+        }
+        const updated = ports.read().pets.map((one) => (one.id === petId ? { ...one, display: result.display } : one));
+        ports.patch({ pets: updated, error: '' });
       } catch (error) {
         ports.fail(error);
       }
@@ -207,6 +235,7 @@ export function createShellActions(deps: ShellDeps): {
 
   return {
     clearOrphans,
+    toggleDisplay,
     ask: (kind: ConfirmKind) => ports.patch({ pending: kind }),
     cancelAsk: () => ports.patch({ pending: null, pendingMemoryId: null, pendingFactId: null, forgetNote: '' }),
     confirmAsk,

@@ -260,11 +260,20 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
   });
 }
 
-/** 工具栏：多选开关、删除选中（带数量）与清空历史；删除都先走面板内确认条。 */
+/** 工具栏：桌宠显隐、多选开关、删除选中（带数量）与清空历史；删除都先走面板内确认条。 */
 export function toolsNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unknown {
   return h('div', {
     className: 'pet-chat-tools',
     children: [
+      h('button', {
+        type: 'button',
+        className: 'pet-chat-tool',
+        'aria-pressed': String(state.desktopVisible),
+        // 与桌面托盘同一套循环：只动桌面那一档，网页侧显示不跟着变
+        title: state.desktopVisible ? '把宠物从桌面上收起来（网页里还在）' : '让宠物出现在桌面上',
+        onClick: () => state.toggleDisplay(),
+        children: state.desktopVisible ? '隐藏桌宠' : '显示桌宠',
+      }),
       personaButton(h, state),
       h('button', {
         type: 'button',

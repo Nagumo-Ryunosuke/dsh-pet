@@ -20,6 +20,7 @@ import {
   memoryBoundaryIndex,
   personaText,
   playAction,
+  setPetDisplay,
   toChatMessages,
 } from './api.ts';
 
@@ -402,6 +403,63 @@ describe('记忆与事实的数据形状', () => {
       assert.equal(items[2]?.via, undefined);
     } finally {
       stub.restore();
+    }
+  });
+});
+
+describe('setPetDisplay —— 显示位置切换走 /pet-display', () => {
+  /** 用给定响应替身跑一次，回收请求与返回值。 */
+  async function withFetch<T>(
+    body: unknown,
+    run: () => Promise<T>,
+  ): Promise<{ calls: { url: string; method: string; body: unknown }[]; value: T }> {
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), method: init?.method ?? 'GET', body: init?.body });
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    try {
+      return { calls, value: await run() };
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  test('POST /pet-display，body 带 id 与目标显示档；成功回显请求的显示档', async () => {
+    const { calls, value } = await withFetch({ ok: true, main: { pets: [] } }, () => setPetDisplay('main', 'web'));
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      ['/dsh-pet-7340/pet-display'],
+    );
+    assert.equal(calls[0]?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(calls[0]?.body)), { id: 'main', display: 'web' });
+    assert.deepEqual(value, { ok: true, display: 'web' });
+  });
+
+  test('宿主拒绝（unknown-pet 等）→ 带文案的失败回执，不抛错', async () => {
+    const { value } = await withFetch({ ok: false, reason: 'unknown-pet', message: '没有这只桌宠：ghost' }, () =>
+      setPetDisplay('ghost', 'desktop'),
+    );
+    assert.deepEqual(value, { ok: false, message: '没有这只桌宠：ghost' });
+  });
+
+  test('失败体只有 reason 时用 reason 当文案', async () => {
+    const { value } = await withFetch({ ok: false, reason: 'bad-request' }, () => setPetDisplay('main', 'none'));
+    assert.deepEqual(value, { ok: false, message: 'bad-request' });
+  });
+
+  test('桌面 Helper 重启会把请求带走：中断按「没改成」报，让用户再点一次', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error('network down');
+    }) as typeof fetch;
+    try {
+      const value = await setPetDisplay('main', 'desktop');
+      assert.equal(value.ok, false);
+      assert.match(value.ok === false ? value.message : '', /再点一次/);
+    } finally {
+      globalThis.fetch = original;
     }
   });
 });

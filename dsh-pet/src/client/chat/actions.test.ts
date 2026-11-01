@@ -9,7 +9,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createMemoryActions, createSendActions, type ActionPorts } from './actions.ts';
+import { createMemoryActions, createSendActions, createShellActions, type ActionPorts } from './actions.ts';
 import type { PanelData } from './types.ts';
 
 /** 造一份够用的面板状态快照。 */
@@ -533,5 +533,81 @@ describe('异步回执的宠物归属', () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+});
+
+describe('显示 / 隐藏桌宠', () => {
+  /** 造一份带宠物的面板状态：display 决定按钮初态。 */
+  function panelWith(display: string, overrides: Partial<PanelData> = {}): PanelData {
+    return panel({
+      pets: [{ id: 'main', name: '大肥鱼', size: 462, display } as unknown as PanelData['pets'][number]],
+      ...overrides,
+    });
+  }
+
+  /** 造外壳动作；history / memory 这里用不到，给空实现。 */
+  function shell(ports: ActionPorts) {
+    return createShellActions({
+      ports,
+      history: { deleteSelected: () => undefined, clearAll: () => undefined },
+      memory: { forgetConfirmed: () => undefined, correctFactConfirmed: () => undefined },
+      listRef: { current: null },
+      pageRounds: 10,
+    });
+  }
+
+  /** 跑一次切换，回收请求与返回值。 */
+  async function withFetch(
+    body: unknown,
+    run: (actions: ReturnType<typeof shell>) => void,
+    state: PanelData,
+  ): Promise<{ calls: { url: string; method: string; body: unknown }[]; box: ReturnType<typeof makePorts>['box'] }> {
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), method: init?.method ?? 'GET', body: init?.body });
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { ports, box } = makePorts(state);
+      run(shell(ports));
+      await settle();
+      return { calls, box };
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  test('点一下收起桌面宠物：按「只动桌面档」的循环写 /pet-display，并让本地状态跟上', async () => {
+    const { calls, box } = await withFetch({ ok: true }, (a) => a.toggleDisplay(), panelWith('both'));
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      ['/dsh-pet-7340/pet-display'],
+    );
+    assert.equal(calls[0]?.method, 'POST');
+    // both → web：网页侧显示不动，只把桌面那一档关掉（与托盘同一套语义）
+    assert.deepEqual(JSON.parse(String(calls[0]?.body)), { id: 'main', display: 'web' });
+    assert.equal(box.state.pets[0]?.display, 'web', '面板里的显示档要跟上，按钮立刻反映新状态');
+  });
+
+  test('再点一下放回桌面：web → both', async () => {
+    const { calls, box } = await withFetch({ ok: true }, (a) => a.toggleDisplay(), panelWith('web'));
+    assert.deepEqual(JSON.parse(String(calls[0]?.body)), { id: 'main', display: 'both' });
+    assert.equal(box.state.pets[0]?.display, 'both');
+  });
+
+  test('宿主拒绝：错误落到面板，显示档保持原样', async () => {
+    const { box } = await withFetch(
+      { ok: false, message: '宠物配置非法' },
+      (a) => a.toggleDisplay(),
+      panelWith('both'),
+    );
+    assert.equal(box.state.pets[0]?.display, 'both', '没改成就不能先跳到新状态');
+    assert.equal(box.state.error, '宠物配置非法');
+  });
+
+  test('没有选中宠物时不发请求', async () => {
+    const { calls } = await withFetch({ ok: true }, (a) => a.toggleDisplay(), panelWith('both', { petId: '' }));
+    assert.deepEqual(calls, []);
   });
 });

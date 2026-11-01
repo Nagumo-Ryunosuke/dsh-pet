@@ -9,7 +9,7 @@ import { sendChat, type ChatAttachment } from '../../shared/chat/send.ts';
 import { flattenConfigPets } from '../../shared/config.ts';
 import { ROUTE_PATH } from '../../shared/constants.ts';
 import { postAction } from '../../shared/state.ts';
-import type { Pet } from '../../shared/types.ts';
+import type { Pet, PetDisplay } from '../../shared/types.ts';
 
 /** 消息里带的图片引用（与宿主 `PetImageRef` 同形，只取显示用到的字段）。 */
 export interface ChatImageRef {
@@ -131,6 +131,43 @@ export async function playAction(petId: string, name: string): Promise<boolean> 
 /** 附件引用 → 取图地址（宿主按内容哈希回字节）。 */
 export function attachmentUrl(ref: ChatImageRef): string {
   return ROUTE_PATH + '/attachment?id=' + encodeURIComponent(ref.attachmentId);
+}
+
+/** 显示位置切换回执：成功带落盘后的显示档，失败带可直接展示的原因。 */
+export type DisplayResult =
+  { readonly ok: true; readonly display: PetDisplay } | { readonly ok: false; readonly message: string };
+
+/**
+ * 改一只宠物的显示位置（`POST /pet-display`）。
+ *
+ * 宿主写盘后会重启桌面 Helper，这次请求的响应可能永远不回来——中断按「没改成」报，
+ * 让用户再点一次，不自动重发（重发会把重启中的 Helper 又打断一次）。
+ *
+ * @param petId - 宠物 id。
+ * @param display - 目标显示档。
+ * @returns 落盘后的显示档，或失败文案。
+ */
+export async function setPetDisplay(petId: string, display: PetDisplay): Promise<DisplayResult> {
+  let res: Response;
+  try {
+    res = await fetch(ROUTE_PATH + '/pet-display', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: petId, display }),
+    });
+  } catch {
+    return { ok: false, message: '切换没成功：桌面进程正在重启，请再点一次' };
+  }
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body?.ok === true) return { ok: true, display };
+  // 业务失败一律 200 + 结构化结果：优先给宿主写好的文案，没有就退回 reason
+  const message =
+    typeof body?.message === 'string' && body.message !== ''
+      ? body.message
+      : typeof body?.reason === 'string' && body.reason !== ''
+        ? body.reason
+        : 'pet-display HTTP ' + res.status;
+  return { ok: false, message };
 }
 
 /**

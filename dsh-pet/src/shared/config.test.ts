@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { flattenConfigPets } from './config.ts';
+import { flattenConfigPets, isDesktopVisible, PET_DISPLAYS, toggleDesktopDisplay } from './config.ts';
 import { readAllConfig } from '../host/config.ts';
 import type { Pet } from './types.ts';
 
@@ -214,6 +214,48 @@ describe('flattenConfigPets —— 成品 → 渲染列表的唯一填充点', (
     assert.ok(
       /listProviders/.test(host) && /listModels/.test(host),
       'GET /models 必须取宿主 llm 服务的 listProviders / listModels（与 DSH 模型选择器同源）',
+    );
+  });
+});
+
+describe('toggleDesktopDisplay —— 桌面显隐的开关循环', () => {
+  test('只动桌面那一档，网页侧显示不跟着变', () => {
+    assert.equal(toggleDesktopDisplay('both'), 'web');
+    assert.equal(toggleDesktopDisplay('web'), 'both');
+    assert.equal(toggleDesktopDisplay('desktop'), 'none');
+    assert.equal(toggleDesktopDisplay('none'), 'desktop');
+  });
+
+  test('来回两下回到原样，且中途桌面档恰好翻转一次', () => {
+    for (const start of PET_DISPLAYS) {
+      const mid = toggleDesktopDisplay(start);
+      assert.equal(toggleDesktopDisplay(mid), start);
+      assert.equal(isDesktopVisible(mid), !isDesktopVisible(start));
+    }
+  });
+
+  test('与桌面托盘是同一套语义（tray.js 的同名函数不得漂移）', () => {
+    const traySource = readFileSync(
+      join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', 'runtime', 'electron-helper', 'main', 'tray.js'),
+      'utf8',
+    );
+    // 两处各自实现（helper 是纯 JS 运行时，不进 TypeScript 构建）：这里钉的是取值表逐项一致。
+    // 前三档是显式比较；none → desktop 是链尾回落（`: 'desktop'`），写法不同但语义必须相同
+    for (const [from, to] of [
+      ['both', 'web'],
+      ['web', 'both'],
+      ['desktop', 'none'],
+    ] as const) {
+      assert.equal(toggleDesktopDisplay(from), to);
+      assert.ok(
+        traySource.includes(`display === '${from}' ? '${to}'`),
+        `托盘的 toggleDisplay 必须保持 ${from} → ${to}`,
+      );
+    }
+    assert.equal(toggleDesktopDisplay('none'), 'desktop');
+    assert.ok(
+      traySource.includes("display === 'desktop' ? 'none' : 'desktop'"),
+      '托盘的 toggleDisplay 必须以 desktop 收尾（none → desktop 是链尾回落）',
     );
   });
 });

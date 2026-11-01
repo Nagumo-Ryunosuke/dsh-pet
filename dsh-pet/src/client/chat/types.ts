@@ -89,6 +89,8 @@ export interface ChatPanelState extends PanelData {
   readonly showOlder: () => void;
   readonly petName: string;
   readonly assetRoot: string;
+  /** 当前这只宠物是否正在桌面上显示（display 含 desktop/both）。 */
+  readonly desktopVisible: boolean;
   /** 当前条目保留的轮数（`chatMemoryRounds`）；配置里没有时不画记忆边界线。 */
   readonly memoryRounds: number | undefined;
   /** 当前这只宠物实际在用的人设正文；空串 = 实例与条目都没写。 */
@@ -118,6 +120,8 @@ export interface ChatPanelState extends PanelData {
   /** 输入框：内容变高时要直接改它的 height。 */
   readonly draftRef: { current: HTMLTextAreaElement | null };
   readonly pickPet: (petId: string) => void;
+  /** 显示 / 隐藏桌宠：只动桌面那一档（`both ↔ web`、`desktop ↔ none`），写盘由宿主负责。 */
+  readonly toggleDisplay: () => void;
   readonly toggleRound: (ts: number) => void;
   /** 进入 / 退出多选模式；退出时清空已勾选。 */
   readonly toggleSelecting: () => void;

@@ -16,6 +16,16 @@ export const isWebVisible = (display: PetDisplay): boolean => display === 'web' 
 /** 该宠物是否参与桌面模式（Electron 透明窗）渲染。 */
 export const isDesktopVisible = (display: PetDisplay): boolean => display === 'desktop' || display === 'both';
 
+/**
+ * 桌面显示的开关循环：只动桌面那一档，网页侧显示不跟着变（`both ↔ web`、`desktop ↔ none`）。
+ *
+ * 用循环而不是「显示 / 隐藏」二值映射：用户特意配的「只在网页」不该被一次点击改成「两边都有」。
+ * 与桌面托盘菜单（runtime/electron-helper/main/tray.js 的 `toggleDisplay`）是同一套语义，
+ * 改这里必须同步那一份——两处各自实现，是因为 helper 是纯 JS 运行时、不进 TypeScript 构建。
+ */
+export const toggleDesktopDisplay = (display: PetDisplay): PetDisplay =>
+  display === 'both' ? 'web' : display === 'web' ? 'both' : display === 'desktop' ? 'none' : 'desktop';
+
 /** 把成品聚合拍平成渲染用宠物列表。
  *  条目级字段（animations / physics / font 等）由所属条目一份、多实例共享；assetRoot 取条目 key，
  *  即素材根。非 main 条目打 extra 标记：文件宠物在设置页不可编辑、保存时排除。 */
