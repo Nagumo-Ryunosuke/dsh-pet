@@ -18,6 +18,7 @@ import { createChatMemory } from './plugin/chat-memory.ts';
 import { chatBackendMode } from './soul/mode.ts';
 import { createFakeSoul } from './soul/fake-soul.ts';
 import { createRealSoul, type RealSoul } from './soul/real-soul.ts';
+import { startQqChannel } from './qq/channel.ts';
 import { registerSoulChatCommand } from './soul/command.ts';
 import { createSessionNotify } from './plugin/session-notify.ts';
 import { createPetLookup } from './plugin/pet-lookup.ts';
@@ -197,6 +198,15 @@ export function apply(ctx: any): void {
     todos,
     waiterCount: () => state.waiterCount(),
   });
+
+  // QQ 渠道：只有 soul 模式才有灵魂可接，且必须显式配置（DSH_PET_QQ_MODULE）。
+  // 放在 registerLifecycle 之前：清理函数要由 ctx.effect 收集，晚于它注册就没人收了
+  if (backendMode === 'soul') {
+    const channelSoul = (chatMemory as RealSoul).channelSoul;
+    if (channelSoul !== undefined) {
+      startQqChannel({ ctx, soul: channelSoul, log });
+    }
+  }
 
   registerLifecycle({
     ctx,

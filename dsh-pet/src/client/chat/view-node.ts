@@ -216,9 +216,90 @@ export function memoryNode(h: ChatPanelRuntime['h'], state: ChatPanelState): unk
             ],
           }),
         ];
+  // QQ 绑定：谁能在 QQ 里跟她说上话。没绑定的人发来消息她一律不回，
+  // 这里就是「让谁可以」的开关——所以它必须在面板上，而不是只能从脚本里调
+  const codeRows =
+    state.bindCode === null
+      ? [
+          h('div', {
+            key: 'channel-hint',
+            className: 'pet-chat-memory-summary',
+            children: [
+              h('span', {
+                className: 'pet-chat-memory-text',
+                children:
+                  state.channelGrants.length === 0
+                    ? '还没有绑定任何人。生成一个码，让要绑定的人私聊发给她，就能对上话。'
+                    : '想再绑一个人，生成一个新码发给他。',
+              }),
+            ],
+          }),
+        ]
+      : [
+          h('div', {
+            key: 'channel-code',
+            className: 'pet-chat-bind-code',
+            children: [
+              h('span', { className: 'pet-chat-bind-code-value', children: state.bindCode.code }),
+              h('span', {
+                className: 'pet-chat-bind-code-note',
+                // 说清三件事：多久有效、在哪儿用、用完去哪儿了
+                children: '5 分钟内有效，只能在私聊里用；发过就失效，过期就重新生成。',
+              }),
+            ],
+          }),
+        ];
+  const grantRows = state.channelGrants.map((one) =>
+    h('div', {
+      key: one.scopeId,
+      className: 'pet-chat-memory-item',
+      children: [
+        h('span', { className: 'pet-chat-memory-when', children: '已绑定' }),
+        h('span', {
+          className: 'pet-chat-memory-text',
+          children: one.capabilities.length === 0 ? one.display : one.display + '・' + one.capabilities.join('、'),
+        }),
+        h('button', {
+          type: 'button',
+          className: 'pet-chat-memory-del',
+          'aria-label': `断开 ${one.display}`,
+          onClick: () => state.askUnlink(one.scopeId),
+          children: '断开',
+        }),
+      ],
+    }),
+  );
+  const channelRows = [
+    h('div', { key: 'channel-title', className: 'pet-chat-memory-subtitle', children: 'QQ 里说话的人' }),
+    ...codeRows,
+    h('div', {
+      key: 'channel-actions',
+      className: 'pet-chat-bind-actions',
+      children: [
+        h('button', {
+          type: 'button',
+          className: 'pet-chat-tool',
+          disabled: state.bindLoading || state.petId === '',
+          onClick: () => state.issueBindCode(),
+          children: state.bindLoading ? '生成中…' : state.bindCode === null ? '生成绑定码' : '换一个码',
+        }),
+      ],
+    }),
+    ...grantRows,
+    ...(state.unlinkNote === ''
+      ? []
+      : [
+          h('div', {
+            key: 'channel-note',
+            className: 'pet-chat-memory-note',
+            role: 'status',
+            children: state.unlinkNote,
+          }),
+        ]),
+  ];
   const body = state.memoryLoading
     ? [h('div', { key: 'loading', className: 'pet-chat-hint', children: '加载中…' })]
-    : [...factRows, ...eventRows, ...usageRows];
+    : [...factRows, ...eventRows, ...usageRows, ...channelRows];
   // 「忘掉一条记忆」后的清理说明：运行系统已不可见，但磁盘备份 / WAL 未必清掉——
   // 把这两层区分清楚，用户才不会误以为删了就等于从磁盘彻底消失
   const note =
@@ -316,6 +397,7 @@ const CONFIRM_TEXT: Record<ConfirmKind, string> = {
   'delete-selected': '删除选中的这几轮对话？',
   'clear-all': '清空这只宠物的全部对话历史？',
   'clear-orphans': '清理已删除宠物的残留历史？',
+  'unlink-channel': '断开这个 QQ？',
 };
 
 /**
@@ -336,14 +418,23 @@ export function confirmNode(rt: ChatPanelRuntime, state: ChatPanelState): unknow
   // 留痕可审计）。两者都不是真删除，措辞要分开，别让用户以为数据从磁盘消失了。
   // 忘掉按轮对齐：同轮一问一答一起消失，确认文案要说清楚，别让用户以为只删这一条
   const suffix =
-    state.pending === 'forget-memory'
+    state.pending === 'unlink-channel'
+      ? '断开之后她不会再回这个人的消息，这段对话也会从记忆里清掉。想重新连上要再生成一次绑定码。'
+      : state.pending === 'forget-memory'
       ? '之后她不会再提起，这一轮会从聊天里消失。运行系统已不可见，但原文仍保留在主数据库里（只是不再参与检索），磁盘上的备份 / WAL 也可能仍保留——要彻底抹除需手动清理。'
       : state.pending === 'correct-fact'
         ? '之后她不会再把这条当成事实。'
         : '删了找不回来。';
   const title =
-    state.pending === 'forget-memory' ? '删除记忆' : state.pending === 'correct-fact' ? '纠正记忆' : '删除对话历史';
-  const primaryLabel = state.pending === 'correct-fact' ? '不对' : '删除';
+    state.pending === 'unlink-channel'
+      ? '断开 QQ'
+      : state.pending === 'forget-memory'
+        ? '删除记忆'
+        : state.pending === 'correct-fact'
+          ? '纠正记忆'
+          : '删除对话历史';
+  const primaryLabel =
+    state.pending === 'unlink-channel' ? '断开' : state.pending === 'correct-fact' ? '不对' : '删除';
   const description = CONFIRM_TEXT[state.pending] + count + suffix;
   // 平台原语缺失（旧宿主）时退化为内联确认条，功能不丢、样式差一点
   if (ui === undefined) {

@@ -329,6 +329,37 @@ export const PANEL_CSS = `
   flex: 0 0 auto;
 }
 
+/* 绑定码：这一段是要被用户抄到手机上的，字号要比正文大、字距拉开，
+   否则 8 位里认错一个字符就要重来一次（而重来是有配额的） */
+.pet-chat-bind-code {
+  display: flex;
+  flex-direction: column;
+  gap: ${px(SIZE.gapTight)};
+  margin: ${px(SIZE.gapTight)} 0;
+  padding: ${px(SIZE.gapTight)} ${px(SIZE.gapWide)};
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+}
+
+.pet-chat-bind-code-value {
+  font: var(--dsw-font-mono-l-20, var(--dsw-font-s-14));
+  font-size: 20px;
+  letter-spacing: 0.18em;
+  user-select: all;
+}
+
+.pet-chat-bind-code-note {
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-s-12);
+}
+
+/* 生成按钮单独一行：它旁边不该有别的按钮，避免误点成「断开」 */
+.pet-chat-bind-actions {
+  display: flex;
+  gap: ${px(SIZE.gapTight)};
+  margin: ${px(SIZE.gapTight)} 0;
+}
+
 .pet-chat-round {
   display: flex;
   align-items: flex-start;

@@ -7,6 +7,8 @@
 import type { EncodedImage } from '../../shared/chat/encode.ts';
 import type { Pet } from '../../shared/types.ts';
 import type {
+  BindCodeView,
+  ChannelGrantView,
   ChatMessageView,
   ChatRound,
   FactItemView,
@@ -72,12 +74,28 @@ export interface PanelData {
   readonly forgetNote: string;
   /** 模型调用用量（按用途分桶的次数）；后端不提供或还没取到时为 null。 */
   readonly usage: ModelUsageView | null;
+  /** 已绑定的渠道会话（QQ 里能跟她说话的人）。 */
+  readonly channelGrants: readonly ChannelGrantView[];
+  /** 刚签发的绑定码；null = 没生成过或已清掉。明文只在这里存活一次。 */
+  readonly bindCode: BindCodeView | null;
+  /** 正在签发绑定码。 */
+  readonly bindLoading: boolean;
+  /** 待确认「断开」的会话标识；null = 没有待确认的。 */
+  readonly pendingScopeId: string | null;
+  /** 断开之后的说明（清了多少条）；空 = 没有。 */
+  readonly unlinkNote: string;
   /** 正在点播的那一轮与阶段；null = 没有在播。同一时刻只播一条。 */
   readonly speaking: { readonly ts: number; readonly phase: 'loading' | 'playing' | 'failed' } | null;
 }
 
 /** 需要二次确认的破坏性操作：用面板内的确认条，不用浏览器原生 `confirm`。 */
-export type ConfirmKind = 'delete-selected' | 'clear-all' | 'clear-orphans' | 'forget-memory' | 'correct-fact';
+export type ConfirmKind =
+  | 'delete-selected'
+  | 'clear-all'
+  | 'clear-orphans'
+  | 'forget-memory'
+  | 'correct-fact'
+  | 'unlink-channel';
 
 /** hook 返回：状态、派生值、动作与列表引用。 */
 export interface ChatPanelState extends PanelData {
@@ -115,6 +133,12 @@ export interface ChatPanelState extends PanelData {
   readonly correctFact: (id: string) => void;
   /** 确认后把事实标记为不对，然后重取。id 由确认分发方传入。 */
   readonly correctFactConfirmed: (id: string) => void;
+  /** 生成一个绑定码（5 分钟、单次）。 */
+  readonly issueBindCode: () => void;
+  /** 请求断开某个已绑定的会话（弹确认条，不执行）。 */
+  readonly askUnlink: (scopeId: string) => void;
+  /** 确认后真正断开：撤权 + 清掉这段对话与派生记忆。 */
+  readonly unlinkConfirmed: (scopeId: string) => void;
   /** 消息列表容器：滚动到底部要用。 */
   readonly listRef: { current: HTMLDivElement | null };
   /** 输入框：内容变高时要直接改它的 height。 */

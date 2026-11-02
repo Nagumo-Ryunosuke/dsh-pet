@@ -9,7 +9,13 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createMemoryActions, createSendActions, createShellActions, type ActionPorts } from './actions.ts';
+import {
+  createChannelActions,
+  createMemoryActions,
+  createSendActions,
+  createShellActions,
+  type ActionPorts,
+} from './actions.ts';
 import type { PanelData } from './types.ts';
 
 /** 造一份够用的面板状态快照。 */
@@ -551,6 +557,7 @@ describe('显示 / 隐藏桌宠', () => {
       ports,
       history: { deleteSelected: () => undefined, clearAll: () => undefined },
       memory: { forgetConfirmed: () => undefined, correctFactConfirmed: () => undefined },
+      channel: { unlinkConfirmed: () => undefined },
       listRef: { current: null },
       pageRounds: 10,
     });
@@ -609,5 +616,82 @@ describe('显示 / 隐藏桌宠', () => {
   test('没有选中宠物时不发请求', async () => {
     const { calls } = await withFetch({ ok: true }, (a) => a.toggleDisplay(), panelWith('both', { petId: '' }));
     assert.deepEqual(calls, []);
+  });
+});
+
+describe('渠道绑定动作', () => {
+  /** 造一份带渠道字段的状态。 */
+  function channelPanel(overrides: Partial<PanelData> = {}): PanelData {
+    return panel({ bindCode: null, channelGrants: [], bindLoading: false, pendingScopeId: null, unlinkNote: '', ...overrides });
+  }
+
+  /** 跑一次动作，收集请求。 */
+  async function withFetch(
+    body: unknown,
+    run: (actions: ReturnType<typeof createChannelActions>) => void,
+  ): Promise<{ calls: { url: string; method: string }[]; box: ReturnType<typeof makePorts>['box'] }> {
+    const calls: { url: string; method: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), method: init?.method ?? 'GET' });
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { ports, box } = makePorts(channelPanel());
+      run(createChannelActions(ports));
+      await settle();
+      return { calls, box };
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  test('生成码：POST 到带 pet 的地址，并把码写进状态', async () => {
+    const { calls, box } = await withFetch(
+      { ok: true, code: 'ABCD2345', expiresAt: 2_000, expiresInMs: 300_000 },
+      (actions) => actions.issueBindCode(),
+    );
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      ['/dsh-pet-7340/qq/bind/code?pet=main'],
+    );
+    assert.equal(calls[0]?.method, 'POST');
+    assert.equal(box.state.bindCode?.code, 'ABCD2345');
+    assert.equal(box.state.bindLoading, false);
+  });
+
+  test('生成失败：错误落在 error 上，不留下半个码', async () => {
+    const { box } = await withFetch({ ok: false, reason: 'bad-request', message: '后端不提供渠道绑定' }, (actions) =>
+      actions.issueBindCode(),
+    );
+    assert.equal(box.state.bindCode, null);
+    assert.match(box.state.error, /不提供/);
+    assert.equal(box.state.bindLoading, false);
+  });
+
+  test('断开先弹确认条，不直接发请求', async () => {
+    const { calls, box } = await withFetch({ ok: true }, (actions) =>
+      actions.askUnlink('qq:10001:private:20002:20002'),
+    );
+    assert.deepEqual(calls, [], '确认之前不能发请求');
+    assert.equal(box.state.pending, 'unlink-channel');
+    assert.equal(box.state.pendingScopeId, 'qq:10001:private:20002:20002');
+  });
+
+  test('确认后断开：DELETE 带 scope，并说明清掉了多少', async () => {
+    const { calls, box } = await withFetch({ ok: true, revoked: true, removed: 6 }, (actions) =>
+      actions.unlinkConfirmed('qq:10001:private:20002:20002'),
+    );
+    assert.equal(calls[0]?.method, 'DELETE');
+    assert.match(calls[0]?.url ?? '', /\/qq\/grants\?pet=main&scope=qq%3A10001%3Aprivate%3A20002%3A20002/);
+    assert.match(box.state.unlinkNote, /6 条/);
+  });
+
+  test('断开失败：错误可见，且不说「已断开」', async () => {
+    const { box } = await withFetch({ ok: false, message: '认不出的会话标识' }, (actions) =>
+      actions.unlinkConfirmed('qq:bad'),
+    );
+    assert.match(box.state.error, /认不出/);
+    assert.equal(box.state.unlinkNote, '');
   });
 });

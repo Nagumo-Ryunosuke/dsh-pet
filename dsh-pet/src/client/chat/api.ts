@@ -434,6 +434,95 @@ export async function fetchMemories(petId: string, query?: string): Promise<Memo
   });
 }
 
+/** 一个已绑定的渠道会话（`GET /qq/grants`）。 */
+export interface ChannelGrantView {
+  /** `qq:账号:形态:会话:发言人`；断开时原样回传。 */
+  readonly scopeId: string;
+  /** 给人看的说明，例如「QQ 20002」。 */
+  readonly display: string;
+  /** 已授予的能力（中文短语）。 */
+  readonly capabilities: readonly string[];
+  /** 授予时刻（毫秒）。 */
+  readonly grantedAt: number;
+}
+
+/** 一次签发的绑定码。明文只出现这一次。 */
+export interface BindCodeView {
+  readonly code: string;
+  /** 到期时刻（毫秒）。 */
+  readonly expiresAt: number;
+  /** 服务端算出的剩余毫秒：前端别用本地时钟推，会漂。 */
+  readonly expiresInMs: number;
+}
+
+/** 列出有效渠道绑定。 */
+export async function fetchChannelGrants(): Promise<ChannelGrantView[]> {
+  const res = await fetch(ROUTE_PATH + '/qq/grants', { cache: 'no-store' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body === null || typeof body !== 'object') throw new Error('qq grants HTTP ' + res.status);
+  if (body.ok !== true) {
+    throw new Error(typeof body.message === 'string' ? body.message : 'qq grants HTTP ' + res.status);
+  }
+  const raw = Array.isArray(body.grants) ? body.grants : [];
+  return raw.flatMap((one) => {
+    if (one === null || typeof one !== 'object') return [];
+    const item = one as Record<string, unknown>;
+    if (typeof item.scopeId !== 'string' || typeof item.display !== 'string') return [];
+    return [
+      {
+        scopeId: item.scopeId,
+        display: item.display,
+        capabilities: Array.isArray(item.capabilities)
+          ? item.capabilities.filter((text): text is string => typeof text === 'string')
+          : [],
+        grantedAt: typeof item.grantedAt === 'number' ? item.grantedAt : 0,
+      },
+    ];
+  });
+}
+
+/**
+ * 签发一个绑定码。
+ *
+ * 码的明文只在这次响应里：服务端存的是哈希，刷新页面就拿不回来，要重来只能再生成一个。
+ */
+export async function issueBindCode(petId: string): Promise<BindCodeView> {
+  const res = await fetch(ROUTE_PATH + '/qq/bind/code?pet=' + encodeURIComponent(petId), { method: 'POST' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body === null || typeof body !== 'object') throw new Error('bind code HTTP ' + res.status);
+  if (body.ok !== true || typeof body.code !== 'string') {
+    throw new Error(typeof body.message === 'string' ? body.message : 'bind code HTTP ' + res.status);
+  }
+  return {
+    code: body.code,
+    expiresAt: typeof body.expiresAt === 'number' ? body.expiresAt : 0,
+    expiresInMs: typeof body.expiresInMs === 'number' ? body.expiresInMs : 0,
+  };
+}
+
+/** 断开一个渠道会话：服务端会撤权并清掉这段对话与派生记忆。 */
+export async function revokeChannelGrant(
+  petId: string,
+  scopeId: string,
+): Promise<{ ok: true; revoked: boolean; removed: number } | { ok: false; message: string }> {
+  const url =
+    ROUTE_PATH +
+    '/qq/grants?pet=' +
+    encodeURIComponent(petId) +
+    '&scope=' +
+    encodeURIComponent(scopeId);
+  const res = await fetch(url, { method: 'DELETE' });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (body !== null && body.ok === true) {
+    return {
+      ok: true,
+      revoked: body.revoked === true,
+      removed: typeof body.removed === 'number' ? body.removed : 0,
+    };
+  }
+  return { ok: false, message: typeof body?.message === 'string' ? body.message : 'HTTP ' + res.status };
+}
+
 /** 记忆删除回执：删到了什么、清到了哪一层（运行系统不可见 vs 磁盘备份也清了）。 */
 export type MemoryDeleteResult =
   | {

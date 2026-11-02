@@ -80,6 +80,23 @@ export interface SummaryItem {
 }
 
 /**
+ * 一个已绑定的渠道会话（`GET /qq/grants` 的条目）。
+ *
+ * `scopeId` 里含 QQ 号：面板是本机的，显示出来用户才认得出是谁；
+ * 它不进日志、不进提示词。
+ */
+export interface ChannelGrantView {
+  /** `qq:账号:形态:会话:发言人`，撤销时原样回传。 */
+  readonly scopeId: string;
+  /** 给人看的说明，例如「QQ 20002」或「群 30001 里的 20002」。 */
+  readonly display: string;
+  /** 已授予的能力（中文短语，直接显示）。 */
+  readonly capabilities: readonly string[];
+  /** 首次授予时刻（毫秒）。 */
+  readonly grantedAt: number;
+}
+
+/**
  * 记忆删除回执：把「删到了什么、清到了哪一层」一次说清。
  *
  * 删除是软删除（退出检索、原文留痕），并且会推进数据版本让在途的后台抽取作废——
@@ -273,6 +290,29 @@ export interface PetRouteDeps {
    * @returns 实际纠正的条数。
    */
   readonly correctFacts?: (petId: string, ids: readonly string[]) => Promise<number>;
+  /**
+   * 签发一个一次性绑定码（渠道侧用）。
+   *
+   * 明文只返回这一次：库里存的是哈希，进程重启后拿不回来。缺省时 `/qq/bind/code`
+   * 明确回「不提供」——不是给一个假码让用户白等。
+   */
+  readonly issueBindCode?: (petId: string) => Promise<{ readonly code: string; readonly expiresAt: number }>;
+  /**
+   * 列出当前有效的渠道绑定。
+   *
+   * 只列**未撤销**的：撤销是「立刻不能再看」，界面上还挂着一条已断开的记录会让人以为没生效。
+   */
+  readonly listChannelGrants?: () => Promise<readonly ChannelGrantView[]>;
+  /**
+   * 撤销一个渠道会话的授权，并清掉它在灵魂里留下的对话与记忆。
+   *
+   * 两步必须一起做：只撤权不清数据的话，用户看到「已断开」，磁盘上那份对话还在，
+   * 下次重新绑定就全回来了。
+   */
+  readonly revokeChannelGrant?: (
+    petId: string,
+    scopeId: string,
+  ) => Promise<{ readonly revoked: boolean; readonly removed: number }>;
   /**
    * 模型调用用量快照：按用途（对话 / 事实抽取 / 摘要重建）累计的调用次数；
    * token 永远是「未知」——宿主模型层不透明，灵魂拿不到，绝不臆造。缺省时端点返回「不提供」。

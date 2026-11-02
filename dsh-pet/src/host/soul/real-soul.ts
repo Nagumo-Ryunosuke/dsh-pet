@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  BindingService,
   createEventRecorder,
   createExtractionScheduler,
   createFactExtractor,
@@ -27,6 +28,8 @@ import {
   defaultPersonaFile,
   openSoulDatabase,
   parsePersona,
+  parseScopeId,
+  SqliteGrantStore,
   SqliteEventStore,
   SqliteFactStore,
   SqliteJobStore,
@@ -40,6 +43,7 @@ import {
   type Persona,
   type Summary,
   type MemoryHit,
+  type Capability,
   type RecalledMemory,
   type Soul,
   type SqliteDatabase,
@@ -57,7 +61,7 @@ import type { PetImageRef } from '../image-attachment.ts';
 import type { ChatMemory } from '../plugin/chat-memory.ts';
 import type { HostContext } from '../plugin/context.ts';
 import type { HostSetup } from '../plugin/setup.ts';
-import type { PetRouteDeps } from '../routes/types.ts';
+import type { ChannelGrantView, PetRouteDeps } from '../routes/types.ts';
 import { extractDailyRunsOf, memoryBudgetOf } from './budget.ts';
 import { RECENT_USER_TURNS } from './recall.ts';
 import { recallWithFacts } from './recall.ts';
@@ -92,6 +96,19 @@ export type RealSoul = ChatMemory & {
   readonly correctFacts: PetRouteDeps['correctFacts'];
   /** 列出对话摘要（只读）；存储不可用时为 `undefined`。 */
   readonly listSummaries: PetRouteDeps['listSummaries'];
+  /**
+   * 灵魂实例本身，给渠道接线用（渠道消息要调 `respond(petId, input)`）。
+   *
+   * 只暴露给「会把消息送进来」的那一层，不挂到路由依赖上——路由拿不到它就不可能
+   * 绕过 scope 直接调 `chat`。
+   */
+  readonly channelSoul?: Soul;
+  /** 签发渠道绑定码；存储不可用时为 `undefined`。 */
+  readonly issueBindCode: PetRouteDeps['issueBindCode'];
+  /** 列出有效渠道绑定；存储不可用时为 `undefined`。 */
+  readonly listChannelGrants: PetRouteDeps['listChannelGrants'];
+  /** 撤销渠道授权并清除其记忆；存储不可用时为 `undefined`。 */
+  readonly revokeChannelGrant: PetRouteDeps['revokeChannelGrant'];
   /**
    * 模型调用用量快照：按用途（对话 / 事实抽取 / 摘要重建）累计的调用次数；
    * token 永远是「未知」——宿主模型层不透明，灵魂拿不到，绝不臆造。存储不可用时为 `undefined`。
@@ -239,6 +256,9 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   let personaId: string | undefined;
   // 记忆存储提到函数作用域：端点的列出/删除也要用它，不能困在人格可用的分支里
   let events: EventStore | null = null;
+  // 渠道授权与绑定码同理：它们要在返回对象里被端点调用，而建库发生在「人格可用」的分支内
+  let grantStoreRef: SqliteGrantStore | null = null;
+  let bindingRef: BindingService | null = null;
 
   /** 聊天历史存储：模型上下文直接从这里读（最近几轮）；删记忆要连带删这里。 */
   let turnStore: TurnStore | null = null;
@@ -343,6 +363,14 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     summaryStoreRef = summaryStore;
     if (storeFile !== null) log.info(`[dsh-pet][soul] 历史落库：${storeFile}`);
 
+    // 渠道授权与绑定码：与历史同库同句柄。库不可用时两者都不建——
+    // 此时没有持久化，绑定也就无从谈起，路由会明确回「不提供」
+    grantStoreRef = db === null ? null : new SqliteGrantStore({ database: db });
+    bindingRef =
+      db === null || grantStoreRef === null
+        ? null
+        : new BindingService({ database: db, grants: grantStoreRef });
+
     // 记忆能力先在块外算好：条件展开（...?(x):{}）会让 TypeScript 丢掉上下文类型，
     // 回调参数全变隐式 any——与其到处标注，不如把可空性收敛到一个对象上
     const memoryCapabilities =
@@ -378,6 +406,9 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       // 历史落库（`<userRoot>/soul.db`）：重启后还能接上，这是 M1 第二阶段的目标
       history: turns,
       ...memoryCapabilities,
+      // 渠道：授权每次现查库（撤权立刻生效），绑定码在未授权私聊里自动兑换
+      ...(grantStoreRef === null ? {} : { grants: grantStoreRef }),
+      ...(bindingRef === null ? {} : { binding: bindingRef }),
       // 在途失效必须真的接到数据版本上：不传的话版本恒为 0，生成期间删除后
       // 旧回复照样落库——「删除使在途对话作废」就成了空话
       ...(opened === null ? {} : { dataVersionOf: (id: string) => opened.dataVersion(id) }),
@@ -628,6 +659,9 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     publishSleepTalk,
     chatWithPet,
     deleteHistory,
+    // 渠道接线拿它去调 respond：这里给的是灵魂实例本身，
+    // 不是包装过的接口——包装会让「谁在说话」变成一层可以忘记传的东西
+    ...(soul === null ? {} : { channelSoul: soul }),
     // 记忆可见化：列出 / 检索 / 删除走的就是召回用的同一个存储与排序，
     // 面板里看到的就是她会想起来的
     listMemories:
@@ -780,6 +814,47 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
             log.info(`[dsh-pet][soul] 纠正事实 pet=${petId} corrected=${corrected}/${ids.length}`);
             return corrected;
           },
+    // 渠道绑定：绑进来的 QQ 才能跟她说上话。
+    // 码的明文只在这一次返回值里出现——库里存的是哈希，刷新页面就得重新生成
+    issueBindCode: ((): RealSoul['issueBindCode'] => {
+      const service = bindingRef;
+      if (service === null) return undefined;
+      return async (petId) => {
+        const issued = service.issue(petId);
+        // 只记到期时间与宠物，不记码本身
+        log.info(
+          `[dsh-pet][soul] 签发渠道绑定码 pet=${petId} 到期=${new Date(issued.expiresAt).toISOString()}`,
+        );
+        return issued;
+      };
+    })(),
+    // 只列未撤销的：撤销是「立刻不能再看」，界面上还挂着已断开的记录会让人以为没生效
+    listChannelGrants: ((): RealSoul['listChannelGrants'] => {
+      const store = grantStoreRef;
+      if (store === null) return undefined;
+      return async () =>
+        store
+          .list()
+          .filter((record) => record.revokedAt === null)
+          .map((record) => grantViewOf(record.scopeId, record.capabilities, record.grantedAt));
+    })(),
+    // 断开 = 撤权 + 清掉那段对话与派生记忆。只撤权不清数据的话，
+    // 用户看到「已断开」而磁盘上还留着，下次重新绑定全回来
+    revokeChannelGrant: ((): RealSoul['revokeChannelGrant'] => {
+      const store = grantStoreRef;
+      const current = soul;
+      if (store === null || current === null) return undefined;
+      return async (petId, scopeId) => {
+        const scope = parseScopeId(scopeId);
+        // 认不出来的标识不给删：宁可报错，也不能猜一个 scope 去清数据
+        if (scope === null) throw new Error('无法识别的渠道会话标识');
+        const result = current.revokeScope(petId, scope);
+        log.info(
+          `[dsh-pet][soul] 断开渠道 pet=${petId} 撤权=${result.revoked ? '是' : '无记录'} 清除=${result.removed} 条`,
+        );
+        return result;
+      };
+    })(),
     // 已删宠物的残留历史：配置里已经没有这只宠物，但库里还有它的历史。
     // 不能再从面板选中它——看不见、删不掉的残留只能改库，且 petId 被复用时旧内容会被召回。
     // 这里如实列出来（entry 无从恢复，用 petId 顶替；SQLite 只存 pet_id）
@@ -850,5 +925,44 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     setActivePetId: (id: string) => {
       activePetId = id;
     },
+  };
+}
+
+/** 能力 → 面板上的中文短语。顺序与 {@link CAPABILITIES} 一致。 */
+const CAPABILITY_TEXT: Record<Capability, string> = {
+  reply: '可以回话',
+  read_group: '可以在群里说话',
+  share_desktop_memory: '能看到桌面记忆',
+  proactive: '可以主动找你',
+};
+
+/**
+ * 把一条授权记录翻成面板条目。
+ *
+ * `scopeId` 里的 QQ 号会显示出来：面板在本机，用户要认得出是谁；
+ * 它不进日志、不进提示词（日志只记 scope 摘要，见灵魂侧 `describeScope`）。
+ *
+ * @param scopeId - `qq:账号:形态:会话:发言人`。
+ * @param capabilities - 已授予的能力。
+ * @param grantedAt - 授予时刻。
+ * @returns 面板条目。
+ */
+function grantViewOf(
+  scopeId: string,
+  capabilities: readonly Capability[],
+  grantedAt: number,
+): ChannelGrantView {
+  const scope = parseScopeId(scopeId);
+  const display =
+    scope === null
+      ? scopeId
+      : scope.conversationType === 'group'
+        ? `群 ${scope.conversationId} 里的 ${scope.actorId}`
+        : `QQ ${scope.actorId}`;
+  return {
+    scopeId,
+    display,
+    capabilities: capabilities.map((one) => CAPABILITY_TEXT[one]),
+    grantedAt,
   };
 }

@@ -13,10 +13,13 @@ import {
   correctFactsById,
   deleteMemoriesById,
   deleteRounds,
+  fetchChannelGrants,
   fetchFacts,
   fetchMemories,
   fetchSummaries,
   fetchUsage,
+  issueBindCode as issueBindCodeApi,
+  revokeChannelGrant,
   sendMessage,
   setPetDisplay,
   type DeleteResult,
@@ -145,6 +148,8 @@ export interface ShellDeps {
   readonly history: { deleteSelected: () => void; clearAll: () => void };
   /** 「忘掉一条记忆」与「这条事实不对」动作（确认后要分发到它们）。 */
   readonly memory: { forgetConfirmed: (id: string) => void; correctFactConfirmed: (id: string) => void };
+  /** 「断开渠道」动作（确认后要分发到它）。 */
+  readonly channel: { unlinkConfirmed: (scopeId: string) => void };
   /** 消息列表容器：展开更早的轮时要按高度差补偿滚动。 */
   readonly listRef: { current: HTMLDivElement | null };
   /** 每次「加载更早」放出的轮数。 */
@@ -160,7 +165,7 @@ export function createShellActions(deps: ShellDeps): {
   confirmAsk: () => void;
   showOlder: () => void;
 } {
-  const { ports, history, memory, listRef, pageRounds } = deps;
+  const { ports, history, memory, channel, listRef, pageRounds } = deps;
 
   /** 清掉已删宠物残留的历史。 */
   const clearOrphans = (): void => {
@@ -213,13 +218,15 @@ export function createShellActions(deps: ShellDeps): {
     const kind = ports.read().pending;
     const memoryId = ports.read().pendingMemoryId;
     const factId = ports.read().pendingFactId;
+    const scopeId = ports.read().pendingScopeId;
     // 一起清：先分发再清的话，「忘掉」这边就拿到 null 了
-    ports.patch({ pending: null, pendingMemoryId: null, pendingFactId: null });
+    ports.patch({ pending: null, pendingMemoryId: null, pendingFactId: null, pendingScopeId: null });
     if (kind === 'delete-selected') history.deleteSelected();
     else if (kind === 'clear-all') history.clearAll();
     else if (kind === 'clear-orphans') clearOrphans();
     else if (kind === 'forget-memory' && memoryId !== null) memory.forgetConfirmed(memoryId);
     else if (kind === 'correct-fact' && factId !== null) memory.correctFactConfirmed(factId);
+    else if (kind === 'unlink-channel' && scopeId !== null) channel.unlinkConfirmed(scopeId);
   };
 
   /** 多放一批更早的轮；按高度差补偿滚动位置，视线不跳。 */
@@ -237,7 +244,14 @@ export function createShellActions(deps: ShellDeps): {
     clearOrphans,
     toggleDisplay,
     ask: (kind: ConfirmKind) => ports.patch({ pending: kind }),
-    cancelAsk: () => ports.patch({ pending: null, pendingMemoryId: null, pendingFactId: null, forgetNote: '' }),
+    cancelAsk: () =>
+      ports.patch({
+        pending: null,
+        pendingMemoryId: null,
+        pendingFactId: null,
+        pendingScopeId: null,
+        forgetNote: '',
+      }),
     confirmAsk,
     showOlder,
   };
@@ -367,6 +381,78 @@ export function createMemoryActions(
           if (stillMine()) ports.fail(error);
         } finally {
           if (stillMine()) ports.patch({ pendingFactId: null });
+        }
+      })();
+    },
+  };
+}
+
+/**
+ * 渠道绑定的动作：生成绑定码、断开。
+ *
+ * 两件事都不做本地乐观更新：
+ * - 码只能由服务端签发（库里只有哈希），本地造不出可用的码；
+ * - 断开要服务端真的撤权并清掉那段记忆才算数，先改本地再失败会让人以为已经断了。
+ *
+ * @param ports - 动作端口。
+ * @returns 渠道卷帘的动作。
+ */
+export function createChannelActions(ports: ActionPorts): {
+  issueBindCode: () => void;
+  askUnlink: (scopeId: string) => void;
+  unlinkConfirmed: (scopeId: string) => void;
+} {
+  /** 重新取一次绑定列表；失败只落在 error 上。 */
+  const refresh = async (): Promise<void> => {
+    try {
+      const grants = await fetchChannelGrants();
+      ports.patch({ channelGrants: grants });
+    } catch (error) {
+      ports.fail(error);
+    }
+  };
+
+  return {
+    issueBindCode: (): void => {
+      void (async () => {
+        const petId = ports.read().petId;
+        if (petId === '') return;
+        ports.patch({ bindLoading: true });
+        try {
+          const issued = await issueBindCodeApi(petId);
+          // 换宠后回来的旧响应不算数：码属于另一只宠物
+          if (ports.read().petId !== petId) return;
+          ports.patch({ bindCode: issued, unlinkNote: '' });
+        } catch (error) {
+          if (ports.read().petId === petId) ports.fail(error);
+        } finally {
+          if (ports.read().petId === petId) ports.patch({ bindLoading: false });
+        }
+      })();
+    },
+    // 断开是破坏性操作（会清掉这段对话与派生记忆）：先弹确认条，不直接执行
+    askUnlink: (scopeId: string): void =>
+      ports.patch({ pending: 'unlink-channel', pendingScopeId: scopeId, unlinkNote: '' }),
+    unlinkConfirmed: (scopeId: string): void => {
+      void (async () => {
+        const petId = ports.read().petId;
+        if (petId === '') return;
+        try {
+          const result = await revokeChannelGrant(petId, scopeId);
+          if (ports.read().petId !== petId) return;
+          if (!result.ok) {
+            ports.fail(result.message);
+            return;
+          }
+          ports.patch({
+            unlinkNote:
+              result.removed > 0
+                ? `已断开，并清掉了这段对话里的 ${result.removed} 条内容。`
+                : '已断开。这段对话本来就没有留下内容。',
+          });
+          await refresh();
+        } catch (error) {
+          if (ports.read().petId === petId) ports.fail(error);
         }
       })();
     },

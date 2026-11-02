@@ -7,8 +7,14 @@
  */
 import { isDesktopVisible } from '../../shared/config.ts';
 import { speakText } from '../../shared/voice.ts';
-import { fetchHistory, groupRounds, playAction as requestPlayAction } from './api.ts';
-import { createHistoryActions, createMemoryActions, createSendActions, createShellActions } from './actions.ts';
+import { fetchChannelGrants, fetchHistory, groupRounds, playAction as requestPlayAction } from './api.ts';
+import {
+  createChannelActions,
+  createHistoryActions,
+  createMemoryActions,
+  createSendActions,
+  createShellActions,
+} from './actions.ts';
 import { createChatEffects } from './effects.ts';
 import type { ChatPanelRuntime } from './runtime.ts';
 import type { ChatPanelState, PanelData } from './types.ts';
@@ -47,6 +53,11 @@ const INITIAL: PanelData = {
   forgetNote: '',
   usage: null,
   speaking: null,
+  channelGrants: [],
+  bindCode: null,
+  bindLoading: false,
+  pendingScopeId: null,
+  unlinkNote: '',
 };
 
 /**
@@ -82,6 +93,21 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
     const patch = (next: Partial<PanelData>): void => setData((prev) => ({ ...prev, ...next }));
     const fail = (error: unknown): void => patch({ error: error instanceof Error ? error.message : String(error) });
 
+    /**
+     * 换宠后重取一次绑定列表。
+     *
+     * 绑定码是按宠物签发的，列表却是全局的；换宠不清会让新面板显示上一只的码。
+     */
+    const channelRefresh = async (petId: string): Promise<void> => {
+      try {
+        const grants = await fetchChannelGrants();
+        if (dataRef.current.petId !== petId) return;
+        patch({ channelGrants: grants, bindCode: null, unlinkNote: '' });
+      } catch {
+        // 旧后端没有这个端点：不报错，卷帘里本来就不会有这一段
+      }
+    };
+
     /** 重读某只宠物的历史；失败只落在 error 上，不静默清空已有消息。 */
     const reload = async (petId: string): Promise<void> => {
       if (petId === '') return;
@@ -101,7 +127,8 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
     const ports = { read: () => dataRef.current, patch, fail, reload };
     const history = createHistoryActions(ports);
     const memory = createMemoryActions(ports, searchSeq.current);
-    const shell = createShellActions({ ports, history, memory, listRef, pageRounds: PAGE_ROUNDS });
+    const channel = createChannelActions(ports);
+    const shell = createShellActions({ ports, history, memory, channel, listRef, pageRounds: PAGE_ROUNDS });
     const pet = data.pets.find((one) => one.id === data.petId);
     const allRounds = groupRounds(data.messages);
     const rounds = allRounds.slice(-data.visibleRounds);
@@ -111,6 +138,7 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
       ...createSendActions(ports),
       ...history,
       ...memory,
+      ...channel,
       ...shell,
       rounds,
       hasOlder: allRounds.length > rounds.length,
@@ -121,7 +149,13 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
       persona: data.personas[data.petId] ?? '',
       togglePersona: () => patch({ personaOpen: !data.personaOpen }),
       closePersona: () => patch({ personaOpen: false }),
-      toggleMemory: () => memory.toggleMemory(),
+      // 展开卷帘时顺带取一次绑定列表：这一段不随记忆检索变化，
+      // 但「刚在别处生成过码」之后展开应当是新的
+      toggleMemory: () => {
+        const opening = !data.memoryOpen;
+        memory.toggleMemory();
+        if (opening) void channelRefresh(data.petId);
+      },
       closeMemory: () => patch({ memoryOpen: false }),
       listRef,
       draftRef,
@@ -151,8 +185,17 @@ export function createPetChatState(rt: ChatPanelRuntime): () => ChatPanelState {
           pendingMemoryId: null,
           pendingFactId: null,
           forgetNote: '',
+          // 渠道绑定也是按宠物分的：换宠要清掉，否则新宠物的卷帘里会挂着上一只绑过的人
+          channelGrants: [],
+          bindCode: null,
+          bindLoading: false,
+          pendingScopeId: null,
+          unlinkNote: '',
         });
         void reload(petId);
+        // 绑定列表是全局的，但「谁能跟她说话」跟宠物无关，却要按当前宠物重新问一次：
+        // 断开时要用当前 petId 去清记忆，显示的也必须是最新的
+        void channelRefresh(petId);
       },
       toggleSelecting: () => patch({ selecting: !data.selecting, selected: [] }),
       toggleRound: (ts: number) =>
