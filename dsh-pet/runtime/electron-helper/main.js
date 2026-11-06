@@ -217,6 +217,8 @@ const tray = createTray({
   petRoute: PET_ROUTE,
   platform: TRAY_PLATFORM,
   helperDir: __dirname,
+  shell,
+  qqOwnerUrl: process.env.DSH_PET_QQ_OWNER_URL || '',
 });
 
 app.whenReady().then(() => {

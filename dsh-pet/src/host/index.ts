@@ -4,7 +4,7 @@
  * @module dsh-pet/src/host/index
  */
 import { createHostSetup } from './plugin/setup.ts';
-import { readAllConfig } from './config.ts';
+import { findPetInstance, readAllConfig } from './config.ts';
 import { createHttpRoute, registerHttpRoute } from './plugin/http-route.ts';
 import { registerLifecycle } from './plugin/lifecycle.ts';
 import { registerChatCommand } from './plugin/command-chat.ts';
@@ -19,6 +19,10 @@ import { chatBackendMode } from './soul/mode.ts';
 import { createFakeSoul } from './soul/fake-soul.ts';
 import { createRealSoul, type RealSoul } from './soul/real-soul.ts';
 import { startQqChannel } from './qq/channel.ts';
+import { createQqOwnerObservation } from './qq/owner-observation.ts';
+import { startQqOwnerUi } from './qq/owner-ui.ts';
+import { startOwnerUiBeforeHelper } from './qq/owner-ui-lifecycle.ts';
+import { createQqOwnerControl, type QqOwnerControl } from '../standalone/qq-owner-control.ts';
 import { registerSoulChatCommand } from './soul/command.ts';
 import { createSessionNotify } from './plugin/session-notify.ts';
 import { createPetLookup } from './plugin/pet-lookup.ts';
@@ -38,7 +42,7 @@ export const inject = ['webServer', 'agentDefaultModel', 'credentials', 'llm', '
 
 /** 宿主插件主体：注册 `/dsh-pet-7340` 前缀路由与斜杠命令（/balance /pet /chat）；ctx 暂用 any（peer 类型包本地不可解析）。 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- DSH 注入的 ctx（webServer/locale 等 service 无静态类型）
-export function apply(ctx: any): void {
+export function apply(ctx: any, options?: { onQqOwnerControl?: (control: QqOwnerControl | null) => void }): void {
   const setup = createHostSetup(ctx);
   const {
     userRoot,
@@ -82,13 +86,50 @@ export function apply(ctx: any): void {
   // 切换靠重启——三种后端从头到尾不是同一份对象，旧模式的在途结果没有回写通道。
   // 换后端只换这一个对象：它经 deps 注入路由，并经下方解构进入命令与轮询，上游代码零改动。
   const backendMode = chatBackendMode();
+  const qqPetId = (process.env['DSH_PET_QQ_PET'] ?? 'main').trim();
+  const qqConfigured =
+    Boolean((process.env['DSH_PET_QQ_MODULE'] ?? '').trim()) &&
+    Boolean((process.env['QGW_ONEBOT_TOKEN'] ?? '').trim()) &&
+    Boolean(qqPetId);
+  const qqObservation = backendMode === 'soul' && qqConfigured ? createQqOwnerObservation(qqPetId) : null;
   const chatMemory =
     backendMode === 'soul'
-      ? createRealSoul({ ctx, configPaths, log, state, userRoot })
+      ? createRealSoul({
+          ctx,
+          configPaths,
+          log,
+          state,
+          userRoot,
+          ...(qqObservation === null ? {} : { experimentalQqAccountObserver: qqObservation.observe }),
+        })
       : backendMode === 'fake'
         ? createFakeSoul({ configPaths, log, state })
         : createChatMemory({ ctx, configPaths, log, memeDirsFor, playback, state, userRoot });
   log.info('[dsh-pet] 聊天后端 = ' + backendMode);
+  let ownerUiControl: QqOwnerControl | undefined;
+  let ownerUiUrl: string | undefined;
+  let ownerUiDisposed = false;
+  let closeOwnerUi: (() => void) | undefined;
+  if (qqObservation !== null) {
+    const ownerBinding = (chatMemory as RealSoul).experimentalQqOwnerBinding;
+    if (ownerBinding !== undefined) {
+      const control = createQqOwnerControl(ownerBinding, qqObservation.observe, (petId) => {
+        try {
+          return findPetInstance(readAllConfig(configPaths), petId) !== undefined;
+        } catch {
+          return false;
+        }
+      });
+      ownerUiControl = control;
+      options?.onQqOwnerControl?.(control);
+    }
+    ctx.effect(() => () => {
+      ownerUiDisposed = true;
+      closeOwnerUi?.();
+      qqObservation.dispose();
+      options?.onQqOwnerControl?.(null);
+    });
+  }
   const { lastWhisperAt, publishWhisper, publishSleepTalk, chatWithPet, getActivePetId, setActivePetId } = chatMemory;
 
   const balancePoll = createBalancePoll({ ctx, configPaths, getActivePetId, log, state });
@@ -107,6 +148,7 @@ export function apply(ctx: any): void {
     thumbUserRoot,
     // 惰性取用：handlePetRoute 在下方装配，Helper 只在启动/收请求时才真正调用它
     getHandlePetRoute: () => httpRoute.handlePetRoute,
+    getQqOwnerUiUrl: () => ownerUiUrl,
   });
   const { startHelper, stopHelper, markDisposed } = desktopHelper;
 
@@ -204,7 +246,12 @@ export function apply(ctx: any): void {
   if (backendMode === 'soul') {
     const channelSoul = (chatMemory as RealSoul).channelSoul;
     if (channelSoul !== undefined) {
-      startQqChannel({ ctx, soul: channelSoul, log });
+      startQqChannel({
+        ctx,
+        soul: channelSoul,
+        log,
+        ...(qqObservation === null ? {} : { onVerifiedAccountChange: qqObservation.update }),
+      });
     }
   }
 
@@ -220,5 +267,17 @@ export function apply(ctx: any): void {
   });
 
   // 路由就绪后拉起桌面 Helper（Electron 缺失时仅告警，不影响 DSH 与浏览器 overlay）
-  startHelper();
+  if (ownerUiControl && options?.onQqOwnerControl === undefined) {
+    const control = ownerUiControl;
+    void startOwnerUiBeforeHelper({
+      startUi: () => startQqOwnerUi(control),
+      disposed: () => ownerUiDisposed,
+      ready: (ui) => {
+        ownerUiUrl = ui.url;
+        closeOwnerUi = ui.close;
+      },
+      startHelper,
+      failed: () => log.warn('[dsh-pet] QQ 主人设置服务启动失败'),
+    });
+  } else startHelper();
 }

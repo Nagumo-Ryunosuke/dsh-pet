@@ -23,6 +23,7 @@ import { createStandaloneLogger } from './logger.ts';
 import { configPathsFor, describePets, isDesktopVisible, parseArgs, USAGE } from './options.ts';
 import { listenStandaloneServer } from './server.ts';
 import { ROUTE_SEGMENT } from '../shared/constants.ts';
+import { createQqOwnerControlSlot } from './qq-owner-control.ts';
 
 /** 启动独立模式：先起服务拿到端口，再 apply。 */
 async function run(logger: StandaloneLogger, options: { port: number }): Promise<void> {
@@ -46,6 +47,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
   const portRef = { value: options.port };
   const ai = createStandaloneAi(home, logger);
   const security = createRequestSecurity();
+  const qqOwner = createQqOwnerControlSlot();
   const context = createStandaloneContext({
     port: () => portRef.value,
     logger,
@@ -62,6 +64,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     port: options.port,
     security,
     ai,
+    qqOwner: qqOwner.control,
     status: () => ({
       name: 'dsh-pet-standalone',
       pid: process.pid,
@@ -114,7 +117,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
   process.on('SIGTERM', () => requestShutdown('SIGTERM'));
 
   // 这一句里注册路由表、状态仓与桌面 Helper（含 bridge 管道）。
-  apply(context.ctx);
+  apply(context.ctx, { onQqOwnerControl: qqOwner.set });
 
   let pets: Record<string, unknown>[] = [];
   let configSource = paths.userFile;

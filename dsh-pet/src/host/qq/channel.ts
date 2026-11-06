@@ -38,17 +38,16 @@ interface GatewayModule {
     soul: { respond(envelope: unknown): Promise<{ text: string } | null> };
     policy?: { groupPolicy?: 'off' | 'mention' | 'all'; replyToPrivate?: boolean };
     logger?: ChannelLogger;
+    onVerifiedAccountChange?: (accountId: string | null) => void;
   }) => unknown;
   readonly QqChannelService: new (options: {
     adapter: { start(): Promise<void>; stop(): Promise<void> };
     restart?: { maxAttempts?: number };
     logger?: ChannelLogger;
   }) => { start(): Promise<void>; stop(): Promise<void>; state(): { running: boolean } };
-  readonly createSoulChannelConnector: (options: {
-    soul: unknown;
-    petId: string;
-    logger?: ChannelLogger;
-  }) => { respond(envelope: unknown): Promise<{ text: string } | null> };
+  readonly createSoulChannelConnector: (options: { soul: unknown; petId: string; logger?: ChannelLogger }) => {
+    respond(envelope: unknown): Promise<{ text: string } | null>;
+  };
 }
 
 /** 与网关侧 `ClientLogger` 同形。 */
@@ -70,6 +69,8 @@ export interface QqChannelOptions {
   readonly log: ChannelLogger;
   /** 环境变量来源，测试可注入。 */
   readonly env?: Record<string, string | undefined>;
+  /** 仅接收网关协商确认的账号及其失效状态，不接收消息内容。 */
+  readonly onVerifiedAccountChange?: (accountId: string | null) => void;
 }
 
 /** 读取环境变量时的默认值。 */
@@ -128,6 +129,7 @@ export function startQqChannel(options: QqChannelOptions): boolean {
         soul: loaded.createSoulChannelConnector({ soul: options.soul, petId, logger: options.log }),
         policy: { groupPolicy: 'off', replyToPrivate: true },
         logger: options.log,
+        onVerifiedAccountChange: options.onVerifiedAccountChange,
       });
       const service = new loaded.QqChannelService({
         adapter: adapter as { start(): Promise<void>; stop(): Promise<void> },

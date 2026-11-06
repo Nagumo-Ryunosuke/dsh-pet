@@ -14,11 +14,12 @@
  * @module dsh-pet/src/host/soul/real-soul
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
   BindingService,
+  QqOwnerBindingService,
   createEventRecorder,
   createExtractionScheduler,
   createFactExtractor,
@@ -46,6 +47,7 @@ import {
   type Capability,
   type RecalledMemory,
   type Soul,
+  type QqAccountObservation,
   type SqliteDatabase,
   type TurnStore,
   type UsageTracker,
@@ -78,7 +80,12 @@ export const PERSONA_ENV = 'DSH_PET_PERSONA';
 export const MODEL_ENV = 'DSH_PET_SOUL_MODEL';
 
 /** 真灵魂后端的输入。 */
-export type RealSoulInput = Pick<HostSetup, 'configPaths' | 'log' | 'state'> & { ctx: HostContext; userRoot: string };
+export type RealSoulInput = Pick<HostSetup, 'configPaths' | 'log' | 'state'> & {
+  ctx: HostContext;
+  userRoot: string;
+  /** 仅供隔离测试注入；生产接入前还需可信登录观察及发送前复核。 */
+  experimentalQqAccountObserver?: (petId: string) => QqAccountObservation;
+};
 
 /** 真灵魂后端的额外观测点。 */
 export type RealSoul = ChatMemory & {
@@ -103,6 +110,8 @@ export type RealSoul = ChatMemory & {
    * 绕过 scope 直接调 `chat`。
    */
   readonly channelSoul?: Soul;
+  /** 仅在显式注入测试观察器且持久存储可用时提供，不作为 HTTP 路由依赖。 */
+  readonly experimentalQqOwnerBinding?: QqOwnerBindingService;
   /** 签发渠道绑定码；存储不可用时为 `undefined`。 */
   readonly issueBindCode: PetRouteDeps['issueBindCode'];
   /** 列出有效渠道绑定；存储不可用时为 `undefined`。 */
@@ -234,6 +243,11 @@ function openStores(
  */
 export function createRealSoul(deps: RealSoulInput): RealSoul {
   const { configPaths, ctx, log, state, userRoot } = deps;
+  try {
+    mkdirSync(userRoot, { recursive: true });
+  } catch (error) {
+    log.warn(`[dsh-pet][soul] 用户数据目录不可用：${error instanceof Error ? error.message : String(error)}`);
+  }
   // 人格放在用户数据目录（可编辑），首次运行用包内默认值播种；显式给 DSH_PET_PERSONA
   // 则完全尊重那个路径（不存在就直接报错，不悄悄播种到别处）。
   const override = process.env[PERSONA_ENV];
@@ -259,6 +273,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
   // 渠道授权与绑定码同理：它们要在返回对象里被端点调用，而建库发生在「人格可用」的分支内
   let grantStoreRef: SqliteGrantStore | null = null;
   let bindingRef: BindingService | null = null;
+  let qqOwnerBindingRef: QqOwnerBindingService | null = null;
 
   /** 聊天历史存储：模型上下文直接从这里读（最近几轮）；删记忆要连带删这里。 */
   let turnStore: TurnStore | null = null;
@@ -367,9 +382,13 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     // 此时没有持久化，绑定也就无从谈起，路由会明确回「不提供」
     grantStoreRef = db === null ? null : new SqliteGrantStore({ database: db });
     bindingRef =
-      db === null || grantStoreRef === null
-        ? null
-        : new BindingService({ database: db, grants: grantStoreRef });
+      db === null || grantStoreRef === null ? null : new BindingService({ database: db, grants: grantStoreRef });
+    if (db !== null && deps.experimentalQqAccountObserver !== undefined) {
+      qqOwnerBindingRef = new QqOwnerBindingService({
+        database: db,
+        observeAccount: deps.experimentalQqAccountObserver,
+      });
+    }
 
     // 记忆能力先在块外算好：条件展开（...?(x):{}）会让 TypeScript 丢掉上下文类型，
     // 回调参数全变隐式 any——与其到处标注，不如把可空性收敛到一个对象上
@@ -409,6 +428,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       // 渠道：授权每次现查库（撤权立刻生效），绑定码在未授权私聊里自动兑换
       ...(grantStoreRef === null ? {} : { grants: grantStoreRef }),
       ...(bindingRef === null ? {} : { binding: bindingRef }),
+      ...(qqOwnerBindingRef === null ? {} : { qqOwnerBinding: qqOwnerBindingRef }),
       // 在途失效必须真的接到数据版本上：不传的话版本恒为 0，生成期间删除后
       // 旧回复照样落库——「删除使在途对话作废」就成了空话
       ...(opened === null ? {} : { dataVersionOf: (id: string) => opened.dataVersion(id) }),
@@ -662,6 +682,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
     // 渠道接线拿它去调 respond：这里给的是灵魂实例本身，
     // 不是包装过的接口——包装会让「谁在说话」变成一层可以忘记传的东西
     ...(soul === null ? {} : { channelSoul: soul }),
+    ...(qqOwnerBindingRef === null ? {} : { experimentalQqOwnerBinding: qqOwnerBindingRef }),
     // 记忆可见化：列出 / 检索 / 删除走的就是召回用的同一个存储与排序，
     // 面板里看到的就是她会想起来的
     listMemories:
@@ -822,9 +843,7 @@ export function createRealSoul(deps: RealSoulInput): RealSoul {
       return async (petId) => {
         const issued = service.issue(petId);
         // 只记到期时间与宠物，不记码本身
-        log.info(
-          `[dsh-pet][soul] 签发渠道绑定码 pet=${petId} 到期=${new Date(issued.expiresAt).toISOString()}`,
-        );
+        log.info(`[dsh-pet][soul] 签发渠道绑定码 pet=${petId} 到期=${new Date(issued.expiresAt).toISOString()}`);
         return issued;
       };
     })(),
@@ -947,11 +966,7 @@ const CAPABILITY_TEXT: Record<Capability, string> = {
  * @param grantedAt - 授予时刻。
  * @returns 面板条目。
  */
-function grantViewOf(
-  scopeId: string,
-  capabilities: readonly Capability[],
-  grantedAt: number,
-): ChannelGrantView {
+function grantViewOf(scopeId: string, capabilities: readonly Capability[], grantedAt: number): ChannelGrantView {
   const scope = parseScopeId(scopeId);
   const display =
     scope === null

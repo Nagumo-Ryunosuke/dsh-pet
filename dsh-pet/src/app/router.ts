@@ -15,11 +15,13 @@ import { boundedRequest, MAX_REQUEST_BYTES, MAX_SETTINGS_BYTES } from '../standa
 import { rejectRequest, type RequestSecurity } from '../standalone/request-security.ts';
 import { settingsHandler, testHandler, type StandaloneServerOptions } from '../standalone/server.ts';
 import { settingsPage, settingsScript, settingsStyle } from '../standalone/settings-page.ts';
+import { handleQqOwner } from '../standalone/server/qq-owner.ts';
 
 /** 路由依赖：安全校验、AI 处理器与两个页面的数据源，全部注入以脱离 Electron 测试。 */
 interface RouterDeps {
   security: RequestSecurity;
   ai?: StandaloneServerOptions['ai'];
+  qqOwner?: StandaloneServerOptions['qqOwner'];
   log(message: string): void;
   status(port: number): unknown;
   landingPage(port: number): string;
@@ -82,6 +84,10 @@ export function startRouter(
         await (url.pathname === '/standalone-ai/test' ? tester : settings)(request, res);
         return;
       }
+      if (url.pathname === '/standalone-qq/owner') {
+        await handleQqOwner(request, res, deps.qqOwner);
+        return;
+      }
       if (!route) {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
         res.end('not found');
@@ -96,7 +102,9 @@ export function startRouter(
     const bodyMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
     void (async () => {
       if (hasBody || bodyMethod) {
-        const limit = url.pathname === '/standalone-ai/settings' ? MAX_SETTINGS_BYTES : MAX_REQUEST_BYTES;
+        const limit = ['/standalone-ai/settings', '/standalone-qq/owner'].includes(url.pathname)
+          ? MAX_SETTINGS_BYTES
+          : MAX_REQUEST_BYTES;
         const bounded = await boundedRequest(req, res, limit);
         if (bounded) await dispatch(bounded);
       } else await dispatch(req);

@@ -19,6 +19,7 @@ import { packageVersion } from '../standalone/check.ts';
 import { createStandaloneContext, type RegisteredRoute } from '../standalone/context.ts';
 import { configPathsFor } from '../standalone/options.ts';
 import { createRequestSecurity } from '../standalone/request-security.ts';
+import { createQqOwnerControlSlot } from '../standalone/qq-owner-control.ts';
 
 import { installDesktopAuth, type DesktopSession } from './desktop-auth.ts';
 import { startRouter } from './router.ts';
@@ -104,6 +105,7 @@ async function boot(): Promise<void> {
 
   // 与 CLI 同一套安全模型：令牌只经「配置页地址的 #token=」递给浏览器，不进日志
   const security = createRequestSecurity();
+  const qqOwner = createQqOwnerControlSlot();
   const ai = createStandaloneAi(dshHomeDir(), logger);
   const context = createStandaloneContext({
     port: () => port,
@@ -113,7 +115,7 @@ async function boot(): Promise<void> {
     authenticatedUrl: security.authenticatedUrl,
   });
 
-  const server = await startRouter(routes, { security, ai, log, status, landingPage });
+  const server = await startRouter(routes, { security, ai, qqOwner: qqOwner.control, log, status, landingPage });
   port = server.port;
   const origin = `http://127.0.0.1:${port}`;
   log(`本机服务 ${origin}`);
@@ -130,7 +132,7 @@ async function boot(): Promise<void> {
   process.env.DSH_PET_SITE_URL = security.authenticatedUrl(origin);
   if (!process.env.DSH_PET_SCALE) process.env.DSH_PET_SCALE = '1';
 
-  apply(context.ctx);
+  apply(context.ctx, { onQqOwnerControl: qqOwner.set });
   log(`apply() 完成：routes=${routes.length} 失败=${context.failures.length}`);
 
   // helper 读它决定建几个窗口；读不到时它会回落到单个默认窗口，首帧再由渲染端自校正

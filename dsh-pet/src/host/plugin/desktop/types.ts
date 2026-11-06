@@ -20,5 +20,6 @@ export type DesktopHelperDeps = Pick<HostSetup, 'configPaths' | 'log' | 'thumbUs
      * 路由处理器（惰性取用）：Helper 启动时才需要转发请求，因此这里拿的是"以后能取到处理器"的承诺，
      * 而不是处理器本身——否则它与路由装配会构成构造期循环。
      */
+    getQqOwnerUiUrl?: () => string | undefined;
     getHandlePetRoute: () => (url: string, method: string, body?: string, signal?: AbortSignal) => Promise<RouteResult>;
   };

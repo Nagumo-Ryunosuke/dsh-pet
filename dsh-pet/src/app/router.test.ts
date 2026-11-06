@@ -5,6 +5,7 @@ import type { RegisteredRoute } from '../standalone/context.ts';
 import { createRequestSecurity } from '../standalone/request-security.ts';
 import { MAX_REQUEST_BYTES, MAX_SETTINGS_BYTES } from '../standalone/request-body.ts';
 import { startRouter } from './router.ts';
+import { createQqOwnerControlSlot } from '../standalone/qq-owner-control.ts';
 
 async function start(routes: RegisteredRoute[] = [], log: (message: string) => void = () => {}) {
   const security = createRequestSecurity();
@@ -158,6 +159,56 @@ test('app caps request bodies before plugins/settings and catches synchronous an
     assert.equal(logs.length, 2);
     assert.ok(!logs.join('').includes('PRIVATE_SENTINEL'));
     assert.equal((await fetch(server.base + '/health')).status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test('app QQ owner route enforces access, size and control lifecycle', async () => {
+  const security = createRequestSecurity();
+  const slot = createQqOwnerControlSlot();
+  const calls: string[][] = [];
+  slot.set({
+    status: () => ({ available: true, configured: false, clearable: false, accountId: '11' }),
+    configure: (...args) => {
+      calls.push(args);
+    },
+    clear: () => {},
+  });
+  const server = await startRouter([], {
+    security,
+    qqOwner: slot.control,
+    log: () => {},
+    status: () => ({}),
+    landingPage: () => '',
+  });
+  const url = `http://127.0.0.1:${server.port}/standalone-qq/owner?pet=main`;
+  const token = { 'X-DSH-Pet-Token': security.token, 'Content-Type': 'application/json' };
+  const body = JSON.stringify({ ownerId: '22', expectedAccountId: '11' });
+  try {
+    assert.equal(
+      (await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })).status,
+      403,
+    );
+    assert.equal(
+      (await fetch(url, { method: 'POST', headers: { ...token, Origin: 'https://evil.test' }, body })).status,
+      403,
+    );
+    assert.equal(
+      (await fetch(url, { method: 'POST', headers: token, body: 'x'.repeat(MAX_SETTINGS_BYTES + 1) })).status,
+      413,
+    );
+    assert.deepEqual(calls, []);
+    assert.equal((await fetch(url, { method: 'POST', headers: token, body })).status, 200);
+    assert.deepEqual(calls, [['main', '22', '11']]);
+    slot.set(null);
+    assert.deepEqual(await (await fetch(url, { headers: token })).json(), {
+      available: false,
+      configured: false,
+      clearable: false,
+    });
+    assert.equal((await fetch(url, { method: 'POST', headers: token, body })).status, 400);
+    assert.deepEqual(calls, [['main', '22', '11']]);
   } finally {
     await server.close();
   }

@@ -32,6 +32,13 @@ export const settingsPage = `<!doctype html>
 <div><label for="maxTokens">单次输出上限（tokens）</label><input id="maxTokens" type="number" min="128" max="4096" step="1" value="1024" required></div></div>
 <p class="hint">间隔至少 60 秒，默认 300 秒。输出上限越小，单次回复越简短。</p>
 </fieldset>
+<fieldset><legend>QQ 主人设置</legend>
+<p class="hint">宠物账号由已配置网关报告，不能手动填写。请确认网关连接的是真实 QQ；指定主人不代表已验证好友关系或开通收发。</p>
+<label for="qq-pet">宠物 ID</label><input id="qq-pet" value="main" maxlength="128">
+<label for="qq-owner">主人 QQ</label><input id="qq-owner" inputmode="numeric" maxlength="20" autocomplete="off" placeholder="填写主人 QQ" disabled>
+<div class="test-row"><button id="qq-check" type="button">检查网关状态</button><button id="qq-save" type="button" disabled>保存主人</button><button id="qq-clear" type="button" disabled>撤销主人</button></div>
+<p id="qq-status" role="status" aria-live="polite">请检查网关状态。</p>
+</fieldset>
 <footer><p id="privacy">所有配置与密钥仅保存在当前机器。<br>关闭 AI 后，桌宠仍可正常显示、移动与互动。</p><button id="save" type="submit" disabled>保存到本机</button></footer>
 <p id="status" role="status" aria-live="polite">正在读取本机设置…</p>
 </form><noscript>需要启用 JavaScript 才能保存设置。请从桌宠菜单打开本页。</noscript></main></body></html>`;
@@ -58,6 +65,44 @@ export const settingsScript = `
   const save = get('save');
   const testBtn = get('test-btn');
   const testResult = get('test-result');
+  const qqPet = get('qq-pet'), qqOwner = get('qq-owner'), qqStatus = get('qq-status');
+  const qqCheck = get('qq-check'), qqSave = get('qq-save'), qqClear = get('qq-clear');
+  if (qqPet && qqOwner && qqStatus && qqCheck && qqSave && qqClear) {
+    let observedAccount = '';
+    const resetQq = () => { observedAccount = ''; qqOwner.disabled = true; qqSave.disabled = true; qqClear.disabled = true; };
+    async function qqRequest(method, body) {
+      const response = await fetch('/standalone-qq/owner?pet=' + encodeURIComponent(qqPet.value.trim()), {
+        method, credentials: 'omit', cache: 'no-store', redirect: 'error',
+        headers: { 'X-DSH-Pet-Token': token, ...(body ? {'Content-Type': 'application/json'} : {}) },
+        ...(body ? {body: JSON.stringify(body)} : {})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '操作失败');
+      return data;
+    }
+    async function checkQq() {
+      resetQq();
+      const requestedPet = qqPet.value.trim();
+      try {
+        const state = await qqRequest('GET');
+        if (requestedPet !== qqPet.value.trim()) return;
+        observedAccount = state.accountId || '';
+        qqOwner.disabled = !state.available; qqSave.disabled = !state.available;
+        qqClear.disabled = !state.clearable;
+        qqStatus.textContent = state.available ? '网关报告的宠物账号：' + state.accountId + '。' : '网关账号尚不可用，暂不可保存。';
+      } catch (error) { qqStatus.textContent = error.message; }
+    }
+    qqPet.addEventListener('input', resetQq);
+    qqCheck.addEventListener('click', checkQq);
+    qqSave.addEventListener('click', async () => {
+      try { await qqRequest('POST', {ownerId: qqOwner.value.trim(), expectedAccountId: observedAccount}); qqOwner.value = ''; await checkQq(); qqStatus.textContent += ' 已在本机指定主人。'; }
+      catch (error) { qqStatus.textContent = error.message; }
+    });
+    qqClear.addEventListener('click', async () => {
+      try { await qqRequest('DELETE'); await checkQq(); qqStatus.textContent += ' 主人配置已撤销。'; }
+      catch (error) { qqStatus.textContent = error.message; }
+    });
+  }
   function message(text, error = false) { status.textContent = text; status.dataset.error = String(error); }
   async function request(method, body) {
     const response = await fetch('/standalone-ai/settings', {

@@ -14,6 +14,7 @@ import { type StandaloneLogger } from '../context.ts';
 import { DEFAULT_STANDALONE_PORT, PORT_SCAN_LIMIT } from './options.ts';
 import type { StandaloneServer, StandaloneServerOptions } from './options.ts';
 import { settingsHandler, testHandler } from './handlers.ts';
+import { handleQqOwner } from './qq-owner.ts';
 import { fail, matches, sendAsset, sendJson } from './respond.ts';
 
 /** 组装请求分发器：先处理探针、设置页与停机，再交给插件路由。 */
@@ -80,6 +81,15 @@ function dispatch(
       void tester(req, res).catch((error: unknown) => fail(res, error, options.logger));
       return;
     }
+    if (pathname === '/standalone-qq/owner') {
+      // 独立于插件 webServer；即使测试监听器漏传 security 也必须拒绝。
+      if (!shutdownSecurity) {
+        rejectRequest(res, 503, '本机访问保护未启用');
+        return;
+      }
+      void handleQqOwner(req, res, options.qqOwner).catch((error: unknown) => fail(res, error, options.logger));
+      return;
+    }
     const route = options.routes.find((candidate) => matches(candidate, pathname));
     if (!route) {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -124,7 +134,9 @@ export function createRequestListener(
     const bodyMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '');
     // 有正文或写方法都要先走有界读取，避免插件自己无限读。
     if ((hasBody || bodyMethod) && typeof req.on === 'function') {
-      const limit = pathname === '/standalone-ai/settings' ? MAX_SETTINGS_BYTES : MAX_REQUEST_BYTES;
+      const limit = ['/standalone-ai/settings', '/standalone-qq/owner'].includes(pathname)
+        ? MAX_SETTINGS_BYTES
+        : MAX_REQUEST_BYTES;
       void boundedRequest(req, res, limit, options.bodyTimeoutMs)
         .then((bounded) => {
           if (bounded) route(bounded, res, pathname);

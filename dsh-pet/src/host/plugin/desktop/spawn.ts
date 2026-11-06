@@ -24,7 +24,7 @@ import {
 /** DesktopSpawn的输入。 */
 export type DesktopSpawnInput = Pick<
   DesktopHelperDeps,
-  'ctx' | 'getHandlePetRoute' | 'log' | 'reportDownload' | 'thumbUserRoot'
+  'ctx' | 'getHandlePetRoute' | 'getQqOwnerUiUrl' | 'log' | 'reportDownload' | 'thumbUserRoot'
 > &
   Pick<DesktopPets, 'getHasDesktopPet' | 'desktopPetList' | 'getTrayOn'>;
 
@@ -117,6 +117,7 @@ export function createDesktopSpawn(deps: DesktopSpawnInput) {
         electronPath,
         env: {
           DSH_PET_CONFIG_URL: configUrl,
+          DSH_PET_QQ_OWNER_URL: deps.getQqOwnerUiUrl?.() ?? '',
           // 已鉴权站点 URL（含本进程启动令牌）：只供 helper 的「打开」首项使用，任何日志都不许出现它
           DSH_PET_SITE_URL: siteUrl,
           // 宿主形态决定菜单首项的去向与文案（同名「打开」项，三种形态三种语义）：

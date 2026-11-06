@@ -36,6 +36,8 @@ function createTray({
   petRoute,
   platform,
   helperDir,
+  shell,
+  qqOwnerUrl,
 }) {
   const isDesktopDisplay = (display) => display === 'desktop' || display === 'both';
 
@@ -127,6 +129,19 @@ function createTray({
             checked: isDesktopDisplay(pet.display),
             click: () => traySetPetDisplay(pet.id, toggleDisplay(pet.display)),
           })),
+          ...(qqOwnerUrl
+            ? [
+                { type: 'separator' },
+                {
+                  label: 'QQ 主人设置',
+                  click: () => {
+                    void shell
+                      .openExternal(qqOwnerUrl)
+                      .catch(() => console.error('[dsh-pet-desktop-helper] QQ 设置打开失败'));
+                  },
+                },
+              ]
+            : []),
           ...(canQuit ? [{ type: 'separator' }, { label: '退出', click: quitApp }] : []),
         ]),
       );

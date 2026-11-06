@@ -8,6 +8,7 @@
 import { type RegisteredRoute, type StandaloneLogger } from '../context.ts';
 import { type RequestSecurity } from '../request-security.ts';
 import { type StandaloneSettingsService } from '../settings.ts';
+import type { QqOwnerControl } from '../qq-owner-control.ts';
 
 /** 默认监听端口。 */
 export const DEFAULT_STANDALONE_PORT = 3080;
@@ -31,6 +32,8 @@ export interface StandaloneServerOptions {
   security?: RequestSecurity;
   /** 设置服务。 */
   ai?: StandaloneSettingsService;
+  /** 仅允许注入可信观察器创建的控制器；默认不存在。 */
+  qqOwner?: QqOwnerControl;
   /** 正文读取时限，仅供超时测试覆盖。 */
   bodyTimeoutMs?: number;
 }
